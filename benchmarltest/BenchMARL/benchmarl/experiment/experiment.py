@@ -999,6 +999,7 @@ class Experiment(CallbackNotifier):
         checkpoint_folder.mkdir(parents=False, exist_ok=True)
         checkpoint_file = checkpoint_folder / f"checkpoint_{self.total_frames}.pt"
         torch.save(self.state_dict(), checkpoint_file)
+        torch.save(self.policy, "trained_model.pt")
         self._checkpointed_files.append(checkpoint_file)
 
     def _load_experiment(self) -> Experiment:
