@@ -26,13 +26,14 @@ class MyCustomEnv2(ParallelEnv):
     """Custom GridWorld environment following PettingZoo Parallel interface with multiple moving agents"""
     metadata = {'render.modes': ['human'], "name": "gridworld_parallel_v0"}
 
-    def __init__(self, size=(3, 3), target=(0, 0), obstacles=None, num_moving_agents=2):
+    def __init__(self, size=(10, 10), target=(0, 0), obstacles=None, num_moving_agents=50):
         super().__init__()
         self.size = size
         self.target = target
-        obstacles_test = [(x, y) for x in range(1, 2) for y in range(1, 2)]
+        obstacles_test = [(x, y) for x in range(1, 9) for y in range(1, 9)]
         self.obstacles = obstacles_test if obstacles_test else []
         self.num_moving_agents = num_moving_agents
+        
 
         # Define agents
         self.agents = [f"movement_agent_{i}" for i in range(num_moving_agents)]
@@ -57,9 +58,11 @@ class MyCustomEnv2(ParallelEnv):
         # State variables
         self.positions = []
         self.mean_field = np.zeros(self.size, dtype=np.float32)
+        self.red_lights = np.zeros(self.size, dtype=np.float32)
         self.steps = 0
         self.max_steps = 100
         self.congestion_coefficient = 10
+        self.dist_map = self.comp_congested_dist_map()
 
     def reset(self, seed=42, options=None):
         random.seed(seed)
@@ -85,12 +88,16 @@ class MyCustomEnv2(ParallelEnv):
 
     def is_valid_position(self, pos):
         x, y = pos
-        return (0 <= x < self.size[0] and
-                0 <= y < self.size[1] and
-                pos not in self.obstacles)
+
+        return (
+            0 <= x < self.size[0] and
+            0 <= y < self.size[1] and
+            pos not in self.obstacles and
+            random.uniform(0, 1) > self.red_lights[x, y]
+        )
     
 
-    def comp_congested_dist_map(self, base_cost):
+    def comp_congested_dist_map(self, base_cost = 1):
         """multi-source dijkstra with edge weights = base_cost + congestion_weight * mean_field[destination_cell]"""
         height, width = self.size
         dist_map = np.full((height, width), np.inf)
@@ -128,7 +135,7 @@ class MyCustomEnv2(ParallelEnv):
                     heapq.heappush(heap, (new_dist, nx, ny))
 
 
-        dist_map[dist_map == np.inf] = -10  # set unreachable cells to -1
+        dist_map[dist_map == np.inf] = 100  # set unreachable cells to -1
         return dist_map
 
 
@@ -136,7 +143,6 @@ class MyCustomEnv2(ParallelEnv):
         """Execute a step for all agents in parallel"""
         rewards = {}
         new_positions = self.positions.copy()
-        time_cost = 1
 
         # 1️⃣ Move only active agents
         for agent, action in actions.items():
@@ -156,7 +162,7 @@ class MyCustomEnv2(ParallelEnv):
         # Update state
         self.positions = new_positions
         self._update_mean_field()
-        dist_map = self.comp_congested_dist_map(base_cost=time_cost)
+        
 
         # 2️⃣ Compute rewards & update termination per agent
         for agent in self.agents:
@@ -169,7 +175,7 @@ class MyCustomEnv2(ParallelEnv):
                 rewards[agent] = 0  # stop penalizing at goal
             else:
                 congestion_cost = self.mean_field[x, y]
-                rewards[agent] = -(dist_map[x, y] + self.congestion_coefficient * congestion_cost)
+                rewards[agent] = -(self.dist_map[x, y] + self.congestion_coefficient * congestion_cost)
 
         self.steps += 1
 
