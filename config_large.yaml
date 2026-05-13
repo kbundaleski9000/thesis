@@ -1,0 +1,32 @@
+# Larger grid with obstacles
+grid:
+  rows: 10
+  cols: 10
+  obstacles: []
+
+groups:
+  - source: [0, 0]
+    sink: [9, 9]
+    mass: 0.25
+  - source: [9, 9]
+    sink: [0, 0]
+    mass: 0.25
+  - source: [0, 9]
+    sink: [9, 0]
+    mass: 0.25
+  - source: [9, 0]
+    sink: [0, 9]
+    mass: 0.25
+
+solver:
+  eta: 0.05
+  tau: 0.01
+  T: 300
+  alpha: 1.5
+  H: 15
+
+trainer:
+  leader_lr: 0.005
+  num_epochs: 100
+
+device: "cuda"

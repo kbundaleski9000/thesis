@@ -1,0 +1,40 @@
+# Grid Configuration
+grid:
+  rows: 5
+  cols: 5
+  obstacles: []
+
+# Groups Configuration
+groups:
+  - source: [0, 0]
+    sink: [4, 4]
+    mass: 0.25
+    label: "top-left → bottom-right"
+  - source: [4, 4]
+    sink: [0, 0]
+    mass: 0.20
+    label: "bottom-right → top-left"
+  - source: [0, 4]
+    sink: [4, 0]
+    mass: 0.30
+    label: "top-right → bottom-left"
+  - source: [4, 0]
+    sink: [0, 4]
+    mass: 0.25
+    label: "bottom-left → top-right"
+
+# Solver Configuration (per group)
+solver:
+  eta: 0.1
+  tau: 0.01
+  T: 200
+  alpha: 1.0
+  H: 9
+
+# Trainer Configuration
+trainer:
+  leader_lr: 0.01
+  num_epochs: 41
+
+# Device
+device: "cuda"  # or "cpu"
