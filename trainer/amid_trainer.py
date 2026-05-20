@@ -8,13 +8,14 @@ from solver.solver import PMFG_OMD_Solver_MultiGroup, solve_multigroup
 
 
 class AMID_Trainer_MultiGroup:
-    def __init__(self, env, solvers, leader_lr=0.01):
+    def __init__(self, env, solvers, leader_lr=0.01, leader_loss_objective = "social_optimum" ):
         self.env     = env
         self.solvers = solvers
 
         # One leader network per group (shared optimizer)
         self.leader_nets = LeaderIncentiveNet(env.rows, env.cols, env.K).to(env.device)
         self.optimizer = optim.Adam(self.leader_nets.parameters(), lr=leader_lr)
+        self.leader_loss_objective = leader_loss_objective 
 
         # Precompute base theta per group (distance-based)
         self.base_thetas = [
@@ -50,7 +51,18 @@ class AMID_Trainer_MultiGroup:
         congestion = torch.sum(L_total ** 2)
 
         reg = sum(torch.sum(abs(t1)) for t1 in theta1_list)
-        return 5 * congestion + reg
+        return congestion 
+    
+    def leader_objective_social_optimum(self, flows, theta_list, theta1_list):
+        """
+        Minimise total travel time .
+        """
+        L_total = torch.stack(flows).sum(dim=0)
+        congestion = torch.sum(L_total ** 2)
+
+        reg = sum(torch.sum(abs(t1)) for t1 in theta1_list)
+        return congestion 
+    
 
     # ── single training step ───────────────────────────────────
     def train_step(self):
@@ -64,8 +76,10 @@ class AMID_Trainer_MultiGroup:
 
 
         _, flows, _ = solve_multigroup(self.solvers, theta_list)
+        
 
         loss = self.leader_objective(flows, theta_list, theta1_list)
+
         loss.backward()
         self.optimizer.step()
         return loss.item()

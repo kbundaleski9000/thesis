@@ -35,6 +35,7 @@ solver:
 trainer:
   leader_lr: 0.01
   num_epochs: 41
+  leader_loss_objective: "social_optimum"  # or "congestion_minimization"
 
 # Device
-device: "cuda"  # or "cpu"
+device: "cpu"  # or "cuda" if GPU is available

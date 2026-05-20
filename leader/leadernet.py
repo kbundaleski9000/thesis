@@ -14,7 +14,8 @@ class LeaderIncentiveNet(nn.Module):
         self.net = nn.Sequential(
             nn.Conv2d(3 * K, 16, kernel_size=3, padding=1), nn.ReLU(),
             nn.Conv2d(16,    16, kernel_size=3, padding=1), nn.ReLU(),
-            nn.Conv2d(16,     1, kernel_size=1), nn.Sigmoid()
+            nn.Conv2d(16,     1, kernel_size=1), 
+            nn.Tanh()
         )
 
     def forward(self, x):   # x: (1, 3*K, rows, cols)
