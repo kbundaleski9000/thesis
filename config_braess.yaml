@@ -19,8 +19,8 @@ solver:
   H: 7
 
 trainer:
-  leader_lr: 0.01
-  num_epochs: 2
+  leader_lr: 0.02
+  num_epochs: 100
   leader_loss_objective: "social_optimum"  # or "congestion_minimization"
 
 device: "cpu"  # or "cuda" if GPU is available
