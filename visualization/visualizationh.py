@@ -52,3 +52,20 @@ def plot_losses(loss_dict, title="Leader Loss Over Training", xlabel="Training S
     plt.grid()
     plt.tight_layout()
     plt.show()
+
+def plot_losses_line(loss_dict, title="Loss Over Training", xlabel="Training Step", ylabel="Loss"):
+    plt.figure(figsize=(8, 6))
+    for label, losses in loss_dict.items():
+        plt.plot(losses, label=label)
+    
+    # Draw a horizontal dashed line at y = 2.00
+    plt.axhline(y=2.00, color='red', linestyle='--', linewidth=1.5, label='Baseline (2.00)')
+    plt.axhline(y=1.625, color='blue', linestyle='--', linewidth=1.5, label='Social Optimum (1.625)')
+    
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()

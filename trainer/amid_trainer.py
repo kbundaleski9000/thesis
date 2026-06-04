@@ -65,7 +65,6 @@ class AMID_Trainer_MultiGroup:
             step_reward = torch.sum(final_flows[h,:,:] * (reward))
             total_social_reward += step_reward 
 
-
         # Leader minimizes the negative of total reward
         return -total_social_reward 
     
@@ -79,17 +78,31 @@ class AMID_Trainer_MultiGroup:
         reg = sum(torch.sum(abs(t1)) for t1 in theta1_list)
         return congestion 
     
+    def loss_follower(self, final_flows, theta_leader):
+
+        total_social_reward = 0.0
+
+        for h in range(self.solvers[0].H):
+            reward1 = -self.solvers[0].alpha  * (final_flows[h,:,:])
+            reward = reward1 - reward1
+            reward[0,1] = reward1[0,1]  # Incentivize the gap cell
+            reward[2,3] = reward1[2,3]  # Incentivize the gap cell
+            reward += self.base_thetas[0]
+            reward += theta_leader[0]  # Add the learned incentive signal
+            reward[2,4] = 0.0  
+
+            step_reward = torch.sum(final_flows[h,:,:] * (reward))
+            total_social_reward += step_reward 
+
+        return -total_social_reward
 
     # ── single training step ───────────────────────────────────
     def train_step(self):
         self.optimizer.zero_grad()
 
         inp  = self._prepare_input()
-        theta_leader = self.leader_nets(inp)
         
-        if self.env.K > 1:
-            theta_leader = theta_leader.repeat(self.env.K, 1, 1)  # (K, 3, rows, cols)
-
+        theta_leader = self.leader_nets(inp)
         print("theta_leader", theta_leader.shape)
 
         theta_final = theta_leader + self.base_thetas  # (K, rows, cols)
@@ -100,4 +113,7 @@ class AMID_Trainer_MultiGroup:
 
         loss.backward()
         self.optimizer.step()
-        return loss.item()
+
+        loss_follower = self.loss_follower(final_flows, theta_leader)
+
+        return loss.item(), loss_follower.item()

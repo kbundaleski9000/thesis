@@ -20,7 +20,7 @@ solver:
 
 trainer:
   leader_lr: 0.02
-  num_epochs: 100
+  num_epochs: 20
   leader_loss_objective: "social_optimum"  # or "congestion_minimization"
 
 device: "cpu"  # or "cuda" if GPU is available
