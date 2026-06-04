@@ -23,11 +23,7 @@ class AMID_Trainer_MultiGroup:
 
     # ── helpers ───────────────────────────────────────────────
     def _make_base_theta(self):
-        theta = torch.tensor(self.env.dist_maps - self.env.dist_maps, device=self.env.device)
-        theta[0, 2, 1] = -1.125
-        theta[0, 0, 3] = -1.125
-
-        theta[0, 2, 4] = 25.0  # Stronger incentive at the sink
+        theta = torch.tensor(-self.env.dist_maps, device=self.env.device)
         return theta
 
     def _prepare_input(self):
@@ -45,28 +41,28 @@ class AMID_Trainer_MultiGroup:
         return torch.stack(channels).unsqueeze(0)  # (1, 3*K, rows, cols)
 
     # ── leader objective ───────────────────────────────────────
-    def leader_objective(self, final_flows, theta_leader):
+    def leader_objective(self, flows, final_flows, theta_leader):
         """
         Minimise total congestion + encourage all groups to reach their sinks.
         """
+
         total_social_reward = 0.0
 
-        for h in range(self.solvers[0].H):
-            # 1. Congestion cost: -alpha * L^2
-            reward1 = -self.solvers[0].alpha  * (final_flows[h,:,:])
-            reward = reward1 - reward1
-            reward[0,1] = reward1[0,1]  # Incentivize the gap cell
-            reward[2,3] = reward1[2,3]  # Incentivize the gap cell
-            reward += self.base_thetas[0]
-            reward[2,4] = 0.0  
-            
-            # Reward per cell: (congestion + signal + entropy)
-            # We multiply by density (final_flow) to get total reward for the population
-            step_reward = torch.sum(final_flows[h,:,:] * (reward))
-            total_social_reward += step_reward 
+        for k in range(self.env.K):
+            flow_k = flows[k]
 
-        # Leader minimizes the negative of total reward
-        return -total_social_reward 
+            for h in range(self.solvers[k].H):
+                # 1. Congestion cost: -alpha * L^2
+                reward = -self.solvers[k].alpha  * (final_flows[h,:,:])
+                reward += self.base_thetas[k]
+                
+                # Reward per cell: (congestion + signal + entropy)
+                # We multiply by density (final_flow) to get total reward for the population
+                step_reward = torch.sum(flow_k[h,:,:] * (reward))
+                total_social_reward += step_reward 
+
+            # Leader minimizes the negative of total reward
+            return -total_social_reward 
     
     def leader_objective_social_optimum(self, flows, theta_list, theta1_list):
         """
@@ -78,23 +74,27 @@ class AMID_Trainer_MultiGroup:
         reg = sum(torch.sum(abs(t1)) for t1 in theta1_list)
         return congestion 
     
-    def loss_follower(self, final_flows, theta_leader):
+    def loss_follower(self, flows, final_flows, theta_leader):
 
         total_social_reward = 0.0
+        print("theta_leader in loss_follower", theta_leader.shape)
 
-        for h in range(self.solvers[0].H):
-            reward1 = -self.solvers[0].alpha  * (final_flows[h,:,:])
-            reward = reward1 - reward1
-            reward[0,1] = reward1[0,1]  # Incentivize the gap cell
-            reward[2,3] = reward1[2,3]  # Incentivize the gap cell
-            reward += self.base_thetas[0]
-            reward += theta_leader[0]  # Add the learned incentive signal
-            reward[2,4] = 0.0  
+        for k in range(self.env.K):
+            flow_k = flows[k]
 
-            step_reward = torch.sum(final_flows[h,:,:] * (reward))
-            total_social_reward += step_reward 
+            for h in range(self.solvers[k].H):
+                # 1. Congestion cost: -alpha * L^2
+                reward = -self.solvers[k].alpha  * (final_flows[h,:,:])
+                reward += self.base_thetas[k]
+                reward += theta_leader[0]
+                
+                # Reward per cell: (congestion + signal + entropy)
+                # We multiply by density (final_flow) to get total reward for the population
+                step_reward = torch.sum(flow_k[h,:,:] * (reward))
+                total_social_reward += step_reward 
 
-        return -total_social_reward
+            # Leader minimizes the negative of total reward
+            return -total_social_reward 
 
     # ── single training step ───────────────────────────────────
     def train_step(self):
@@ -107,13 +107,13 @@ class AMID_Trainer_MultiGroup:
 
         theta_final = theta_leader + self.base_thetas  # (K, rows, cols)
 
-        _, _, final_flows = solve_multigroup(self.solvers, theta_final)
+        _, flows, final_flows = solve_multigroup(self.solvers, theta_final)
 
-        loss = self.leader_objective(final_flows, theta_leader)
+        loss = self.leader_objective(flows, final_flows, theta_leader)
 
         loss.backward()
         self.optimizer.step()
 
-        loss_follower = self.loss_follower(final_flows, theta_leader)
+        loss_follower = self.loss_follower(flows, final_flows, theta_leader)
 
         return loss.item(), loss_follower.item()

@@ -16,7 +16,7 @@ class LeaderIncentiveNet(nn.Module):
             nn.Conv2d(16,    16, kernel_size=3, padding=1), nn.ReLU()
         )
         
-        self.final_conv = nn.Conv2d(16, K, kernel_size=1)
+        self.final_conv = nn.Conv2d(16, 1, kernel_size=1)
         self.activation = nn.Sigmoid()
 
     def forward(self, x):   # x: (1, 3*K, rows, cols)
@@ -31,7 +31,7 @@ class LeaderIncentiveNet(nn.Module):
         spatial_mean = torch.mean(out, dim=(2, 3), keepdim=True)
         
         # 3. Add the spatial mean to every grid cell within its respective group
-        out = out - spatial_mean
+        out = out - spatial_mean  # Broadcasting will add the mean to each cell in the group
         
         # Return negated output flattened to (K, rows, cols)
         return -out.squeeze(0)

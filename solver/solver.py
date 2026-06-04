@@ -78,12 +78,8 @@ class PMFG_OMD_Solver_MultiGroup:
         for h in reversed(range(self.H)):
             # Congestion felt from TOTAL density (all groups)
             theta = torch.reshape(theta, (self.env.rows, self.env.cols))
-            reward1 = -self.alpha * (L_total[h])
-
-            reward = reward1 - reward1
-            reward[0,1] = reward1[0,1]  # Incentivize the gap cell
-            reward[2,3] = reward1[2,3]  # Incentivize the gap cell
-            reward += theta
+            reward = -self.alpha * (L_total[h])
+            reward += theta  # Add incentive signal from leader
             
 
             current_q = torch.zeros(
