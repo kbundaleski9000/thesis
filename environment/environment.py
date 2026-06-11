@@ -105,3 +105,73 @@ class GridWorldMFG_MultiGroup:
             all_dist_maps[k] = dist_map
 
         return all_dist_maps
+
+
+class GraphWorldMFG_MultiGroup:
+    """
+    Graph environment hosting K agent groups across N nodes.
+    
+    groups: list of dicts, each with keys:
+        "source" : int (node index)
+        "sink"   : int (node index)
+        "mass"   : float
+    adjacency_matrix: numpy array or tensor of shape (N, N)
+    """
+    def __init__(self, num_nodes, groups, adjacency_matrix, device="cpu"):
+        self.N = num_nodes
+        self.K = len(groups)
+        self.groups = groups
+        self.device = device
+        
+        # Symmetrize or ensure tensor format for adjacency
+        A = torch.tensor(adjacency_matrix, dtype=torch.float32, device=device)
+        
+        # Mask Matrix M = A + I_N (Allowing valid moves + self-loops)
+        self.M = (A + torch.eye(self.N, device=device)).bool().float()
+        
+        # Precompute log-mask: 0 for valid links, -inf for blocked links
+        self.log_M = torch.zeros_like(self.M)
+        self.log_M[self.M == 0] = float('-inf')
+        
+        # Precompute distance maps over graphs via standard Dijkstra/BFS
+        self.dist_maps = self.compute_graph_dist_maps()
+
+    def compute_graph_dist_maps(self, base_cost=1.0):
+        """Computes shortest path distances from every node TO each group's sink."""
+
+        import numpy as np
+        import scipy.sparse as sp
+        from scipy.sparse.csgraph import dijkstra
+
+        # ------------------------------------------------------------
+        # IMPORTANT FIX:
+        # We build adjacency from ORIGINAL A (not M), and then transpose
+        # so Dijkstra-from-sink gives distances node -> sink correctly
+        # ------------------------------------------------------------
+
+        # remove self-loops cleanly
+        adj_np = self.M.detach().cpu().numpy() - np.eye(self.N)
+
+        # FIX: transpose graph to match "node → sink" semantics
+        graph = sp.csr_matrix(adj_np.T)
+
+        all_dist_maps = np.zeros((self.K, self.N))
+
+        for k in range(self.K):
+            sink_node = self.groups[k]["sink"]
+
+            # shortest paths FROM sink on reversed graph
+            dists = dijkstra(
+                csgraph=graph,
+                directed=True,
+                indices=sink_node
+            )
+
+            # cap unreachable nodes
+            dists[np.isinf(dists)] = 100.0
+
+            dists[sink_node] = -self.N
+
+            all_dist_maps[k] = dists
+
+        return all_dist_maps

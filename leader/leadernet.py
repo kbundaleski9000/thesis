@@ -35,3 +35,32 @@ class LeaderIncentiveNet(nn.Module):
         
         # Return negated output flattened to (K, rows, cols)
         return -out.squeeze(0)
+
+
+class GraphLeaderIncentiveNet(nn.Module):
+    """
+    MLP-based Network that generates theta maps for all K groups.
+    Input: (N, Feature_Dim) — Features describing node roles
+    Output: (K, N) — One incentive signal per graph node per group
+    """
+    def __init__(self, num_nodes, K):
+        super().__init__()
+        self.N = num_nodes
+        self.K = K
+        
+        # Process node structures directly using Dense Linear layers
+        self.mlp = nn.Sequential(
+            nn.Linear(3 * self.K, 32), nn.ReLU(),
+            nn.Linear(32, 32),          nn.ReLU(),
+            nn.Linear(32, 1) # Output a logit for each group per node
+        )
+        self.activation = nn.Sigmoid()
+
+    def forward(self, node_features):   
+        # node_features shape: (N, feature_dim)
+        out = self.mlp(node_features)   # Shape: (N, K)
+        out = out.t()                   # Transpose to group format: (K, N)
+        out = self.activation(out)
+        
+        
+        return -out

@@ -1,0 +1,29 @@
+# Network Topology Definition
+graph:
+  num_nodes: 4
+  adjacency_matrix:
+    - [0, 1, 1, 0]
+    - [1, 0, 1, 1]
+    - [1, 1, 0, 1]
+    - [0, 1, 1, 0]
+
+# Multi-group agent setup (using node integer IDs instead of grid coordinates)
+groups:
+  - source: 0
+    sink: 3
+    mass: 1.0
+    label: "Group 1"
+
+trainer:
+  leader_lr: 0.01
+  num_epochs: 41
+  leader_loss_objective: "social_optimum"  # or "congestion_minimization"
+
+solver:
+  eta: 0.1
+  tau: 0.01
+  T: 200
+  alpha: 1.0
+  H: 7
+
+device: "cpu"
