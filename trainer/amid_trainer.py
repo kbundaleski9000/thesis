@@ -13,7 +13,7 @@ class AMID_Trainer_MultiGroup:
         self.solvers = solvers
 
         # One leader network per group (shared optimizer)
-        self.leader_nets = GraphLeaderIncentiveNet(env.N, env.K).to(env.device)
+        self.leader_nets = LeaderIncentiveNet(env.rows, env.cols, env.K).to(env.device)
         self.optimizer = optim.Adam(self.leader_nets.parameters(), lr=leader_lr)
         self.leader_loss_objective = leader_loss_objective 
 
@@ -26,7 +26,7 @@ class AMID_Trainer_MultiGroup:
         theta = torch.tensor(-self.env.dist_maps, dtype=torch.float32, device=self.env.device)
         return theta
 
-    def _prepare_input_grid(self):
+    def _prepare_input(self):
         """3*K channel grid image for all groups."""
         env = self.env
         channels = []
@@ -39,29 +39,6 @@ class AMID_Trainer_MultiGroup:
             src_ch[group["source"][0], group["source"][1]] = 1.0
             channels.extend([obs_ch, sink_ch, src_ch])
         return torch.stack(channels).unsqueeze(0)  # (1, 3*K, rows, cols)
-    
-    def _prepare_input(self):
-        """
-        Generates an (N, 3*K) structural feature block for the Graph MLP network.
-        For each node, features track: [is_sink_k, is_source_k, distance_to_sink_k]
-        """
-        N = self.env.N
-        K = self.env.K
-        node_features = []
-        
-        for node_idx in range(N):
-            features = []
-            for k in range(K):
-                group = self.env.groups[k]
-                
-                is_sink = 1.0 if node_idx == group["sink"] else 0.0
-                is_source = 1.0 if node_idx == group["source"] else 0.0
-                norm_dist = self.env.dist_maps[k, node_idx] / 100.0 # Normalized range
-                
-                features.extend([is_sink, is_source, norm_dist])
-            node_features.append(features)
-        
-        return torch.tensor(node_features, dtype=torch.float32, device=self.env.device)
 
     # ── leader objective ───────────────────────────────────────
     def leader_objective(self, flows, final_flows, theta_leader):
@@ -79,7 +56,9 @@ class AMID_Trainer_MultiGroup:
                 reward = -self.solvers[k].alpha * (final_flows[h])
 
                 # include base distance theta and leader-provided incentive
-                reward = reward + self.base_thetas[k] + theta_leader[k]
+                print("theta_leader in leader_objective", theta_leader.shape)
+                print("base_thetas in leader_objective", self.base_thetas.shape)
+                reward = reward + self.base_thetas[k] + theta_leader[0]
                 reward[self.env.groups[k]["sink"]] = 0.0 # No congestion cost at the sink
 
                 # Reward per cell: (congestion + signal + entropy)
@@ -111,7 +90,7 @@ class AMID_Trainer_MultiGroup:
             for h in range(self.solvers[k].H):
                 # 1. Congestion cost: -alpha * L^2
                 reward = -self.solvers[k].alpha * (final_flows[h])
-                reward = reward + self.base_thetas[k] + theta_leader[k]
+                reward = reward + self.base_thetas[k] + theta_leader[0]
 
                 # Reward per cell: (congestion + signal + entropy)
                 # We multiply by density (final_flow) to get total reward for the population
@@ -143,3 +122,4 @@ class AMID_Trainer_MultiGroup:
         loss_follower = self.loss_follower(flows, final_flows, theta_leader)
 
         return loss.item(), loss_follower.item()
+
