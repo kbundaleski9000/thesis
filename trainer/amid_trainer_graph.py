@@ -78,7 +78,7 @@ class GraphEdgeMFG_Trainer:
 
             # 5. Simulate Agent Response (Inner MFG loop)
             flows_new, final_spatial_flows, policies_new = solve_multigroup(
-                self.env, self.solvers, theta_final, T=20, W_max=5
+                self.env, self.solvers, theta_final, T=20, W_max=8
             )
 
             # 6. Compute Loss and Backpropagate

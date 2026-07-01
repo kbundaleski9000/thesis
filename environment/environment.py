@@ -5,10 +5,11 @@ class GraphWorldMFG_MultiGroup:
     """
     Graph environment that hosts K agent groups with routing paths.
     """
-    def __init__(self, adjacency_matrix, groups, device="cpu"):
+    def __init__(self, num_nodes, adjacency_matrix, groups, device="cpu"):
         self.device = device
         self.groups = groups
         self.K      = len(groups)
+        self.num_nodes = num_nodes
         
         # A is an adjacency matrix tensor of shape (N, N)
         self.A = torch.tensor(adjacency_matrix, dtype=torch.float32, device=device)

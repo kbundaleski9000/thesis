@@ -4,7 +4,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 
-def solve_multigroup(env, solvers, theta_list, T=20, W_max=5):
+def solve_multigroup(env, solvers, T=200, W_max=5):
     """
     Main MFG execution loop using explicit congestion waiting-times.
     
@@ -17,8 +17,8 @@ def solve_multigroup(env, solvers, theta_list, T=20, W_max=5):
     H = solvers[0].H
     N = env.N
     edge_cost = torch.zeros((N, N), device=env.device)
-    edge_cost[0,2] = -5.5
-    edge_cost[1,3] = -5.5
+    edge_cost[0,2] = 5.5
+    edge_cost[1,3] = 5.5
     
     # Initialize policies from the initial solver states
     policies = [solver.get_policy(solver.zeta) for solver in solvers]
@@ -55,7 +55,10 @@ def solve_multigroup(env, solvers, theta_list, T=20, W_max=5):
              
             # Map physical edge traffic volumes directly into integer delays
             # Scale multiplier determines traffic sensitivity (Clamped between 0 and W_max)
-            W_cong_history[h] = torch.clamp(torch.floor(E_total_edges_final[h] * 5.0 + edge_cost), 0, W_max)
+            W_cong_history[h] = torch.clamp(E_total_edges_final[h] * 5.1 + edge_cost, min=1, max=8)
+
+            if t == T-1:
+                print(W_cong_history)
 
             # Distribute tracking flows into the next timestep h+1
             for k in range(K):
@@ -84,7 +87,7 @@ def solve_multigroup(env, solvers, theta_list, T=20, W_max=5):
         new_policies = []
         for k, solver in enumerate(solvers):
             # Use backward induction value maps factoring ahead for link delays
-            q = solver.compute_q_values_with_waiting_time(W_cong_history, W_max, theta_list[k])
+            q = solver.compute_q_values_with_waiting_time(W_cong_history, W_max)
             
             # Update regularized Online Mirror Descent logits
             solver.zeta = (1 - solver.eta * solver.tau) * solver.zeta + solver.eta * q
@@ -102,12 +105,13 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
     """
     OMD Solver customized for Graph networks using dynamic delay-waiting times.
     """
-    def __init__(self, env, group_idx, eta=0.1, tau=0.01, alpha=1.0, H=30):
+    def __init__(self, env, group_idx, eta=0.1, tau=0.01, T=200, alpha=1.0, H=30):
         self.env         = env
         self.k           = group_idx
         self.group       = env.groups[group_idx]
         self.eta         = eta
         self.tau         = tau
+        self.T           = T
         self.H           = H
         self.alpha       = alpha
         self.device      = env.device
@@ -134,7 +138,7 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
                 policy[:, u, :] = F.softmax(mask, dim=-1)
         return policy
 
-    def compute_q_values_with_waiting_time(self, W_cong_history, W_max, theta_leader_k):
+    def compute_q_values_with_waiting_time(self, W_cong_history, W_max):
         """
         Performs backwards value-iteration induction factoring dynamic delays.
         
@@ -166,8 +170,7 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
                         next_h = min(h + 1, self.H)
                         
                         # Q value integrates leader incentives as an edge reward adjustment
-                        leader_bonus = theta_leader_k[u, v] if theta_leader_k is not None else 0.0
-                        Q[h, u, v] = running_cost + leader_bonus + V[next_h, v, delay]
+                        Q[h, u, v] = running_cost + 0 + V[next_h, v, delay]
                     
                     # For Best-Response OMD updates, V maps the highest possible edge choice
                     # Non-neighboring nodes will remain -inf or filtered via masking 
