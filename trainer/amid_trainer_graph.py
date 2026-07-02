@@ -31,15 +31,8 @@ class GraphEdgeMFG_Trainer:
         total_social_loss = 0.0
 
         for h in range(H):
-            for k in range(K):
-                sink = self.env.groups[k]["sink"]
-                # Sum over all waiting time tiers to get total mass at each node
-                spatial_mass_h = flows[k, h].sum(dim=-1) 
-                
-                for u in range(N):
-                    if u != sink:
-                        # Add 1.0 unit of social cost for every unit of mass stuck traveling
-                        total_social_loss += spatial_mass_h[u].item()
+            cost = 1 - flows[0, h, self.env.groups[0]["sink"], 0]
+            total_social_loss += cost
 
         return total_social_loss
     
@@ -51,38 +44,42 @@ class GraphEdgeMFG_Trainer:
         features_final = torch.cat([spatial_flows.flatten(), W_cong_history.flatten(), 
                                     self.base_thetas.flatten(), adj.flatten()], dim=0)
 
-        
-
         return features_final
 
-    def train_step(self, flows_previous, W_cong_history, trainstep):
+    def train_step_ds(self, flows_previous, W_cong_history, trainstep):
             """
             Executes one policy optimization step for the leader infrastructure network.
             """
             self.optimizer.zero_grad()
 
-            # 1. Sum out the waiting time dimension to get purely spatial flows (K, H, N)
-            spatial_flows = flows_previous.sum(dim=-1)
+            if trainstep == 1:
+            # OPTION A: If you want the network to train on iteration 1, 
+                # feed dummy/zero placeholder features through your network:
+                spatial_flows = torch.zeros((self.env.K, self.env.H, self.env.N), device=self.env.device)
+                base_cong = torch.zeros((self.env.H, self.env.N, self.env.N), device=self.env.device)
+                
+                inp = self._prepare_input(spatial_flows, base_cong)
+                theta_leader = self.leader_nets(inp)
 
-            # 2. Use your original input feature preparation method!
-            # This function stacks the flows and edge metrics together to reach the expected 267 features
-            inp = self._prepare_input(spatial_flows, W_cong_history)
-            
-            # 3. Pass the correctly shaped tensor into the network
-            theta_leader = self.leader_nets(inp)  # Shape: (N, N)
+            # OPTION B: If you strictly want a hardcoded flat zero matrix for step 1,
+            # you MUST explicitly tell PyTorch to track its gradients:
+            # theta_leader = torch.zeros((self.env.N, self.env.N), device=self.env.device, requires_grad=True)
+
+            else:
+                # 1. Prepare the input features for the leader network
+                spatial_flows = flows_previous.sum(dim=-1)  # Sum over waiting time dimension
+                inp = self._prepare_input(spatial_flows, W_cong_history)
+                theta_leader = self.leader_nets(inp)
 
             # 5. Simulate Agent Response (Inner MFG loop)
             flows_new, final_spatial_flows, policies_new, W_cong_history_new, zeta_history_new = solve_multigroup(
-                self.env, self.solvers, T=200, W_max=8, theta_leader=theta_leader
+                self.env, self.solvers, T=50, W_max=15, theta_leader=theta_leader
             )
-
-
 
             # 6. Compute Loss and Backpropagate
             social_loss = self.compute_social_loss(flows_new, W_cong_history)
             
-            loss_tensor = torch.tensor(social_loss, requires_grad=True, device=self.env.device)
-            loss_tensor.backward()
+            social_loss.backward()
             self.optimizer.step()
 
             return social_loss, flows_new, W_cong_history_new
@@ -114,10 +111,8 @@ class GraphEdgeMFG_Trainer:
         sink = self.env.groups[k_group]["sink"]
         loss_G = torch.tensor(0.0, device=self.env.device)
         for h in range(self.env.H):
-            for u in range(self.env.N):
-                if u != sink:
-                    # Change += to explicit out-of-place assignment
-                    loss_G = loss_G + flows_sim[k_group, h, u, :].sum()
+            cost = 1 - flows_sim[k_group, h, sink, 0]
+            loss_G = loss_G + cost
         # 5. Extract the derivative of the loss with respect to the input logits
         loss_G.backward(retain_graph=True)
         a_T = zeta_target.grad
@@ -150,7 +145,7 @@ class GraphEdgeMFG_Trainer:
         # 4. Compute the Q-values (this represents F(\theta, \zeta_t) in your algorithm)
         # W_max is available via self.solvers[0].W_max or passed in
         q_out = self.solvers[k_group].compute_q_values_with_waiting_time(
-            W_cong_sim, W_max=8, theta_leader=theta_leader
+            W_cong_sim, W_max=15, theta_leader=theta_leader
         )
         
         # 5. Compute the Vector-Jacobian Product directly using PyTorch's autograd tool
@@ -191,7 +186,7 @@ class GraphEdgeMFG_Trainer:
         # 2. Forward Pass of the Game: Run OMD for T steps
         T_steps = 40
         flows_new, _, _, W_cong_history_new, zeta_history = solve_multigroup(
-            self.env, self.solvers, T=T_steps, W_max=8, theta_leader=theta_leader
+            self.env, self.solvers, T=T_steps, W_max=15, theta_leader=theta_leader
         )
 
         # 3. Calculate Terminal Adjoint States (Line 4 of Alg 1)
@@ -232,11 +227,14 @@ class GraphEdgeMFG_Trainer:
                 # Since Q = running_cost + theta_leader + V, the partial derivative ∂θQ is identity (1.0)
                 # Thus, ∂θF with respect to theta_leader simplifies cleanly to a direct mapping of the adjoint weight:
                 s_adjoint -= eta * a_adjoint[k]
-
         
         s_adjoint_final = s_adjoint.sum(dim=0)
         # 5. Execute backpropagation through the leader network using the final s_0 gradient
         theta_leader.backward(s_adjoint_final)
         self.optimizer.step()
 
-        return social_loss, flows_new, W_cong_history_new
+        theta_leader_out = theta_leader.detach()
+
+        print(f"theta _ leader out is {theta_leader_out}")
+
+        return social_loss, flows_new, W_cong_history_new, theta_leader_out

@@ -4,7 +4,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 
-def solve_multigroup(env, solvers, T=200, W_max=5, theta_leader=None):
+def solve_multigroup(env, solvers, T=200, W_max=10, theta_leader=None):
     """
     Main MFG execution loop using explicit congestion waiting-times.
     
@@ -153,14 +153,15 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
                 mask = torch.full((self.H, self.N), float('-inf'), device=self.device)
                 
                 # 2. Assign the 2D slice of logits [H, len(neighbors)] to the valid columns
-                mask[:, neighbors] = zeta[:, u, neighbors]
+                # Inside get_policy:
+                mask[:, neighbors] = zeta[:, u, neighbors] / 3.0  # Dividing by a temperature softens the step
+                policy[:, u, :] = F.softmax(mask, dim=-1)
                 
                 # 3. Softmax across the destination node dimension (dim=-1) 
                 # This ensures invalid nodes get 0 probability and valid ones sum to 1.0 for every timestep h
-                policy[:, u, :] = F.softmax(mask, dim=-1)
         return policy
 
-    def compute_q_values_with_waiting_time(self, W_cong_history, W_max=3, theta_leader=None):
+    def compute_q_values_with_waiting_time(self, W_cong_history, W_max=10, theta_leader=None):
         import torch
         
         Q_list = []
@@ -201,7 +202,7 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
                         future_val = (weight_floor * V_next[v, delay_floor] + 
                                     weight_ceil * V_next[v, delay_ceil])
                         
-                        q_actions[v] = running_cost + theta_leader[u, v] + future_val
+                        q_actions[v] = running_cost - theta_leader[u, v] + future_val
                     
                     v_choice = torch.max(q_actions).unsqueeze(0)
                 

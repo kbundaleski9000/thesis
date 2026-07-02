@@ -58,9 +58,9 @@ class GraphLeaderIncentiveNet(nn.Module):
         global_output_dim = 1 * self.N * self.N
         
         self.mlp = nn.Sequential(
-            nn.Linear(global_input_dim, 32), nn.ReLU(),
-            nn.Linear(32, 32),                nn.ReLU(),
-            nn.Linear(32, global_output_dim)  # Outputs exactly 16 values globally
+            nn.Linear(global_input_dim, 128), nn.ReLU(),
+            nn.Linear(128, 128),               nn.ReLU(),
+            nn.Linear(128, global_output_dim) # Outputs exactly 16 values globally
         )
         self.activation = nn.Sigmoid()
 
@@ -77,5 +77,5 @@ class GraphLeaderIncentiveNet(nn.Module):
         out = out.view(self.N, self.N)   
         
         # 4. Turn into a negative penalty map
-        out = self.activation(out)
-        return -out
+        out = self.activation(out) * 5.0
+        return out

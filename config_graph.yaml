@@ -21,8 +21,8 @@ trainer:
   leader_loss_objective: "social_optimum"  # or "congestion_minimization"
 
 solver:
-  eta: 0.1
-  tau: 0.01
+  eta: 0.2
+  tau: 0.1
   T: 20
   alpha: 1.0
   H: 20
