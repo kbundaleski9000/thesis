@@ -43,14 +43,15 @@ class GraphLeaderIncentiveNet(nn.Module):
     Input: (N, 3 * K) — Features describing node structural profiles
     Output: (K, N, N) — One incentive matrix per group
     """
-    def __init__(self, num_nodes, K):
+    def __init__(self, num_nodes, K, H):
         super().__init__()
         self.N = num_nodes
         self.K = K
+        self.H = H
         
         # 1. Total features for the WHOLE graph = N nodes * (3 * K features per node)
         # For N=4, K=1, this equals 4 * 3 = 12 input features
-        global_input_dim = self.K * (self.N * self.N * 2) + 42 + self.N * self.N * 7
+        global_input_dim = self.K * self.N * self.H + self.H * self.N * self.N  + self.K * self.N + self.N * self.N
         
         # 2. Total output elements needed = K groups * N from_nodes * N to_nodes
         # For N=4, K=1, this equals 1 * 4 * 4 = 16 output elements
@@ -73,7 +74,7 @@ class GraphLeaderIncentiveNet(nn.Module):
         out = self.mlp(flat_input)       
         
         # 3. Reshape safely because 16 elements maps perfectly to (1, 4, 4)
-        out = out.view(1, self.N, self.N)   
+        out = out.view(self.N, self.N)   
         
         # 4. Turn into a negative penalty map
         out = self.activation(out)
