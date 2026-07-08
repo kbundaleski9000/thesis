@@ -21,10 +21,10 @@ trainer:
   leader_loss_objective: "social_optimum"  # or "congestion_minimization"
 
 solver:
-  eta: 0.2
-  tau: 0.1
-  T: 20
+  eta: 0.1
+  tau: 0.05
+  T: 25
   alpha: 1.0
-  H: 20
+  H: 25
 
 device: "cpu"

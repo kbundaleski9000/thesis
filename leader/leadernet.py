@@ -51,7 +51,7 @@ class GraphLeaderIncentiveNet(nn.Module):
         
         # 1. Total features for the WHOLE graph = N nodes * (3 * K features per node)
         # For N=4, K=1, this equals 4 * 3 = 12 input features
-        global_input_dim = self.K * self.N * self.H + self.H * self.N * self.N  + self.K * self.N + self.N * self.N
+        global_input_dim =          self.H * self.N * self.N       +      2 * self.N * self.N         +          self.H * self.N
         
         # 2. Total output elements needed = K groups * N from_nodes * N to_nodes
         # For N=4, K=1, this equals 1 * 4 * 4 = 16 output elements
