@@ -89,11 +89,11 @@ def solve_multigroup(env, solvers, T=200, W_max=10, theta_leader=None):
                 for w in range(1, W_max + 1):
                     next_edge_occ[k, :, :, w - 1] = next_edge_occ[k, :, :, w - 1] + current_edge_occ[k, :, :, w]
 
-                # Rule B: mass with w=0 has arrived -> becomes free node_mass at destination v
-                arriving_per_v = current_edge_occ[k, :, :, 0].sum(dim=0)  # sum over origin u -> (N,)
-                next_node_mass[k] = next_node_mass[k] + arriving_per_v
-
-                # Rule C: free mass at each node makes a new routing decision
+                # Rule C: free mass at each node makes a new routing decision.
+                # MOVED before Rule B (previously ran after): dispatching new departures
+                # into next_edge_occ BEFORE releasing tier-0 means a fresh delay==0
+                # dispatch lands in the same bucket Rule B is about to check, so it gets
+                # released the same tick instead of waiting one extra tick.
                 active_mass = current_node_mass[k]  # (N,)
                 for u in range(N):
                     if u == sink:
@@ -113,6 +113,18 @@ def solve_multigroup(env, solvers, T=200, W_max=10, theta_leader=None):
                         # Mass enters the EDGE's occupancy, not the destination node's waiting tier
                         next_edge_occ[k, u, v, delay_floor] = next_edge_occ[k, u, v, delay_floor] + moving_mass * weight_floor
                         next_edge_occ[k, u, v, delay_ceil] = next_edge_occ[k, u, v, delay_ceil] + moving_mass * weight_ceil
+
+                # Rule B: mass with w=0 has arrived -> becomes free node_mass at destination v.
+                # FIX: reads next_edge_occ (the FRESHLY updated tier-0 bucket, after both
+                # Rule A's decrement and Rule C's new dispatches), not current_edge_occ (the
+                # stale, one-tick-old snapshot). This catches BOTH mass that just decremented
+                # down to tier 0 from tier 1, AND mass freshly dispatched at delay==0 -- both
+                # become free THIS tick, matching a uniform "delay + 1" timing convention
+                # instead of the previous "delay + 2" (which came from releasing only from
+                # the stale snapshot, one tick behind what had actually just arrived at tier 0).
+                arriving_per_v = next_edge_occ[k, :, :, 0].sum(dim=0)  # sum over origin u -> (N,)
+                next_node_mass[k] = next_node_mass[k] + arriving_per_v
+                next_edge_occ[k, :, :, 0] = 0.0  # already released -- don't let it linger and double-count next tick
 
             node_mass_list.append(next_node_mass)
             edge_occ_list.append(next_edge_occ)
@@ -166,6 +178,13 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
                 # 1. Initialize a 2D mask of shape (H, N) with -inf
                 mask = torch.full((self.H, self.N), float('-inf'), device=self.device)
 
+                # 2. Assign the 2D slice of logits [H, len(neighbors)] to the valid columns.
+                # FIX: no extra temperature division here. The paper's Fomd already folds
+                # all entropy regularization into the (1 - eta*tau) decay applied to zeta
+                # in the OMD update (see solve_multigroup). softmax(zeta) is defined at
+                # temperature 1 -- dividing by an extra ad hoc constant here double-counts
+                # (and, at /0.5, actively sharpens) the regularization, which is what was
+                # collapsing the policy to a near-deterministic single path.
                 mask[:, neighbors] = zeta[:, u, neighbors]
                 policy[:, u, :] = F.softmax(mask, dim=-1)
 
@@ -177,7 +196,13 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
         import torch
 
         Q_list = []
-
+        # 1. Start with the terminal boundary conditions at horizon H (all zeros)
+        # Shape: (N, W_max + 1)
+        # FIX: seed with TWO terminal frames, not one. The w==1 boundary case below needs
+        # to look two frames ahead (h+2), not one, and both "H" and "H+1" are equally
+        # past the end of the horizon -- there's nothing there but the same all-zero
+        # boundary condition, so padding with two identical terminal frames keeps the
+        # V_list[-2] lookup valid even for the first two iterations of the loop.
         V_list = [torch.zeros((self.N, W_max + 1), device=self.env.device),
                   torch.zeros((self.N, W_max + 1), device=self.env.device)]
 
@@ -191,20 +216,35 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
             Q_current_nodes = []
 
             for u in range(self.N):
-
+                # FIX: use this solver's own group sink, not group 0's. Harmless when
+                # K=1, but silently wrong the moment groups have different sinks.
                 sink = self.env.groups[self.k]["sink"]
 
+                # FIX: "still traveling" (w > 0) and "already arrived, free to act" (w == 0)
+                # are different situations and must use different costs. Previously both
+                # used the same `running_cost = 0 if u == sink else -1`, which meant ANY
+                # edge landing on the sink -- e.g. a long, congested edge like 1->3 -- was
                 transit_cost = -1.0
                 arrived_cost = 0.0 if u == sink else -1.0
 
-                v_waiting = []
-                for w in range(1, W_max + 1):
-                    if w == 1:
-                        val = transit_cost + (transit_cost + V_next_next[u, 0])
-                    else:
-                        val = transit_cost + V_next[u, w - 1]
-                    v_waiting.append(val)
+                # --- Rule A: Handle locked waiting states (w > 0) out-of-place ---
+                # REVERTED to the simple, uniform +1 formula (no w==1 special case).
+                # Instead of patching the backward induction to match a "+2" timing
+                # convention, the forward simulation itself (solve_multigroup /
+                # simulate_forward_with_policy) was changed so a delay==0 dispatch
+                # becomes free the SAME tick, not one tick later. With that forward-sim
+                # fix in place, this uniform +1 formula is what's actually consistent.
+                v_waiting = [transit_cost + V_next[u, w - 1] for w in range(1, W_max + 1)]
 
+                # --- Rule B: Handle choice states (w == 0) ---
+                # FIX: initialize to -inf, not 0. Previously, non-neighbor "actions" were
+                # left at exactly 0.0 and then fed into logsumexp alongside real, typically
+                # very negative, path costs. Since 0 > any real cumulative cost, those
+                # phantom invalid actions dominated the soft-max and pinned V near 0
+                # everywhere -- washing out the true cost differences between routes and
+                # removing the OMD update's incentive to ever deviate off the first path
+                # it locked onto. Masking with -inf restricts the soft-max to only the
+                # actual available actions, exactly as get_policy already does.
                 q_actions = torch.full((self.N,), float('-inf'), device=self.env.device)
 
                 if u == sink:
@@ -218,12 +258,23 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
                         weight_ceil = delay_continuous - delay_floor.float()
                         weight_floor = 1.0 - weight_ceil
 
-                        # Differentiable linear interpolation lookup
+                        # REVERTED to the simple, uniform lookup (no delay==0 special
+                        # case) -- consistent with the forward-sim fix described above.
                         future_val = (weight_floor * V_next[v, delay_floor] +
                                       weight_ceil * V_next[v, delay_ceil])
 
                         q_actions[v] = arrived_cost - theta_leader[u, v] + future_val
 
+                    # FIX (approach 2, not approach 1): use the ON-POLICY value of the
+                    # actual current policy pi = softmax(zeta), not the idealized
+                    # instantaneously-optimal soft-Bellman value via logsumexp. These two
+                    # only coincide once pi has converged to exactly softmax(Q/tau); zeta
+                    # is an EMA of past Q so pi lags behind that during essentially all of
+                    # training. Using the on-policy value here matches the paper's own
+                    # Vtau_h definition (expectation under the actual pi, plus tau*H(pi))
+                    # and keeps this backward pass consistent with the same pi that
+                    # generated W_cong_history in the forward pass -- which is what the
+                    # AMID adjoint method (Lemma 2) requires for its gradient to be exact.
                     pi_u = self.get_policy(self.zeta)[h, u, :]
 
                     q_safe = torch.where(torch.isinf(q_actions), torch.zeros_like(q_actions), q_actions)
@@ -237,6 +288,10 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
 
                 V_current_nodes.append(v_node)
 
+                # Replace -inf placeholders with 0 before storing Q. The -inf mask is only
+                # needed to get a correct V; get_policy already masks non-neighbor zeta
+                # entries itself, so feeding -inf/nan into zeta via the OMD update
+                # (zeta = (1-eta*tau)*zeta + eta*Q) is unnecessary risk for no benefit.
                 q_actions_clean = torch.where(
                     torch.isinf(q_actions), torch.zeros_like(q_actions), q_actions
                 )
@@ -294,13 +349,9 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
         Vp_list = [zero(), zero()]
 
         def wait_chain(V_next, V_next2, u, transit_cost):
-            vals = []
-            for w in range(1, W_max + 1):
-                if w == 1:
-                    vals.append(transit_cost + (transit_cost + V_next2[u, 0]))
-                else:
-                    vals.append(transit_cost + V_next[u, w - 1])
-            return vals
+            # REVERTED to the simple, uniform +1 formula -- see compute_q_values_with_waiting_time
+            # for why (the forward simulation was fixed instead of the backward induction).
+            return [transit_cost + V_next[u, w - 1] for w in range(1, W_max + 1)]
 
         for h in reversed(range(H)):
             Vb_next, Vb_next2 = Vb_list[-1], Vb_list[-2]
@@ -327,6 +378,8 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
                         wc = delay - df.float()
                         wf = 1.0 - wc
 
+                        # REVERTED to the simple, uniform lookup -- see
+                        # compute_q_values_with_waiting_time for why.
                         fb = wf * Vb_next[v, df] + wc * Vb_next[v, dc]
                         fp = wf * Vp_next[v, df] + wc * Vp_next[v, dc]
 
