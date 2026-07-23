@@ -14,6 +14,7 @@ class GraphEdgeMFG_Trainer:
         # Initialize Leader Network mapping historical edge traffic flows
         self.leader_nets = GraphLeaderIncentiveNet(env.N, env.K, solvers[0].H).to(env.device)
         self.optimizer = optim.Adam(self.leader_nets.parameters(), lr=leader_lr)
+        self.OMDsteps = 40
 
         self.edge_cost = torch.zeros((self.env.N, self.env.N), device=self.env.device)
         self.edge_cost[0, 2] = 5.5
@@ -102,7 +103,7 @@ class GraphEdgeMFG_Trainer:
                 policy_target[k] = self.solvers[k].get_policy(zeta_t[k].detach())
         
         # 3. Simulate forward passing the localized target policy and current leader rules
-        flows_sim, final_flows_sim, _, W_cong_sim = self.env.simulate_forward_with_policy(
+        flows_sim, final_flows_sim, _, W_cong_sim = self.env.simulate_forward_with_policysimulate_forward_with_policy(
             policy_sim=policy_target, 
             theta_leader=theta_leader
         )
@@ -254,7 +255,7 @@ class GraphEdgeMFG_Trainer:
 
         print(f"Iteration {iteration}: Leader theta_leader =\n{theta_leader.detach()}")
 
-        T_steps = 60
+        T_steps = self.OMDsteps
 
         with torch.no_grad():
             _, _, final_flows_new, policies_new, W_cong_history_new, zeta_history = solve_multigroup(
