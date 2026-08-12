@@ -5,32 +5,157 @@ import torch.nn.functional as F
 import numpy as np
 
 
-def solve_multigroup(env, solvers, T=200, W_max=10, theta_leader=None):
+def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cost=None,
+                      congest_all_edges=True, capacity=None, alpha=0.15, beta=4.0,
+                      cost_model="linear"):
     """
-    Vectorized version of the MFG execution loop. Numerically identical to the
-    loop-based version -- the only change is replacing explicit Python loops over
-    (k, u, v) with masked/batched tensor operations. See the loop-based version's
-    docstring for the full explanation of the state representation and the Rule
-    A/B/C mechanics; comments here focus on how each loop was vectorized.
+    Vectorized version of the MFG execution loop.
 
-    Returns: identical to the loop-based version.
-        node_mass, edge_occ, final_flows, policies, W_cong_history, zeta_history
+    FIX: edge_cost and the congestion mask are now real parameters instead of
+    hardcoded for two specific edges. The original hardcoding (edge_cost[0,2]=5.5,
+    edge_cost[1,3]=5.5, congestion tracked only on (0,1)/(2,3)) was specific to
+    the small 4-node test network -- on a larger graph (e.g. Sioux Falls), it
+    silently left every OTHER edge free and congestion-insensitive, which is not
+    a hyperparameter issue, it's a structurally wrong cost model.
+
+    Args:
+        edge_cost: (N,N) tensor of free-flow/base cost per edge (this is t_e^0 when
+                   cost_model="bpr"). Defaults to 0 everywhere if not provided.
+        congest_all_edges: if True (default), every valid edge is congestion-sensitive.
+        capacity: (N,N) tensor of per-edge capacity C_e, REQUIRED when cost_model="bpr".
+                  Must be scaled consistently with your population mass units -- see
+                  the mass/capacity scaling discussion (capacity_e_scaled = capacity_real / S,
+                  where S is the same total-demand scale factor used to normalize mass).
+        alpha, beta: standard BPR parameters (default 0.15, 4.0). Can be scalars or
+                  (N,N) tensors if you have per-edge values from real data.
+        cost_model: "linear" (original: edge_cost + E_total*5.0) or "bpr"
+                  (t_e^0 * (1 + alpha*(x_e/C_e)^beta)).
+
+    Returns: identical to before -- node_mass, edge_occ, final_flows, policies,
+             W_cong_history, zeta_history.
     """
     K = len(solvers)
     H = solvers[0].H
     N = env.N
     device = env.device
 
-    edge_cost = torch.zeros((N, N), device=device)
-    edge_cost[0, 2] = 5.5
-    edge_cost[1, 3] = 5.5
+    if edge_cost is None:
+        edge_cost = torch.zeros((N, N), device=device)
 
-    # Precompute a (N,N) adjacency mask once: adj_mask[u,v]=1 iff v is a valid
-    # neighbor of u. Replaces every `for v in env.get_neighbors(u)` inner loop.
-    adj_mask = torch.zeros((N, N), device=device)
-    for u in range(N):
-        for v in env.get_neighbors(u):
-            adj_mask[u, v] = 1.0
+    capacity = torch.zeros((N, N), device=device)
+    capacity[0, 1] = 0.071825
+    capacity[0, 2] = 0.064901
+    capacity[1, 0] = 0.071825
+    capacity[1, 5] = 0.013750
+    capacity[2, 0] = 0.064901
+
+    capacity[2, 3] = 0.047450
+    capacity[2, 11] = 0.064901
+    capacity[3, 2] = 0.047450
+    capacity[3, 4] = 0.049314
+    capacity[3, 10] = 0.013613
+
+    capacity[4, 3] = 0.049314
+    capacity[4, 5] = 0.013722
+    capacity[4, 8] = 0.027732
+    capacity[5, 1] = 0.013750
+    capacity[5, 4] = 0.013722
+
+    capacity[5, 7] = 0.013585
+    capacity[6, 7] = 0.021747
+    capacity[6, 17] = 0.064901
+    capacity[7, 5] = 0.013585
+    capacity[7, 6] = 0.021747
+
+    capacity[7, 8] = 0.014005
+    capacity[7, 15] = 0.013993
+    capacity[8, 4] = 0.027732
+    capacity[8, 7] = 0.014005
+    capacity[8, 9] = 0.038591
+
+    capacity[9, 8] = 0.038591
+    capacity[9, 10] = 0.027732
+    capacity[9, 14] = 0.037471
+    capacity[9, 15] = 0.013463
+    capacity[9, 16] = 0.013848
+
+    capacity[10, 3] = 0.013613
+    capacity[10, 9] = 0.027732
+    capacity[10, 11] = 0.013613
+    capacity[10, 13] = 0.013523
+    capacity[11, 2] = 0.064901
+
+    capacity[11, 10] = 0.013613
+    capacity[11, 12] = 0.071825
+    capacity[12, 11] = 0.071825
+    capacity[12, 23] = 0.014119
+    capacity[13, 10] = 0.013523
+
+    capacity[13, 14] = 0.014219
+    capacity[13, 22] = 0.013657
+    capacity[14, 9] = 0.037471
+    capacity[14, 13] = 0.014219
+    capacity[14, 18] = 0.040390
+
+    capacity[14, 21] = 0.026620
+    capacity[15, 7] = 0.013993
+    capacity[15, 9] = 0.013463
+    capacity[15, 16] = 0.014503
+    capacity[15, 17] = 0.054575
+
+    capacity[16, 9] = 0.013848
+    capacity[16, 15] = 0.014503
+    capacity[16, 18] = 0.013378
+    capacity[17, 6] = 0.064901
+    capacity[17, 15] = 0.054575
+
+    capacity[17, 19] = 0.064901
+    capacity[18, 14] = 0.040390
+    capacity[18, 16] = 0.013378
+    capacity[18, 19] = 0.013873
+    capacity[19, 17] = 0.064901
+
+    capacity[19, 18] = 0.013873
+    capacity[19, 20] = 0.014032
+    capacity[19, 21] = 0.014076
+    capacity[20, 19] = 0.014032
+    capacity[20, 21] = 0.014503
+
+    capacity[20, 23] = 0.013548
+    capacity[21, 14] = 0.026620
+    capacity[21, 19] = 0.014076
+    capacity[21, 20] = 0.014503
+    capacity[21, 22] = 0.013866
+
+
+    capacity[22, 13] = 0.013657
+    capacity[22, 21] = 0.013866
+    capacity[22, 23] = 0.014083
+    capacity[23, 12] = 0.014119
+    capacity[23, 20] = 0.013548
+
+    capacity[23, 22] = 0.014083
+
+    capacity.sqrt_()
+
+    if cost_model == "bpr" and capacity is None:
+        raise ValueError(
+            "cost_model='bpr' requires a real capacity tensor -- there's no safe "
+            "default here, since capacity must be scaled to match your mass units "
+            "(see the mass/capacity scaling discussion). Pass capacity=... explicitly."
+        )
+
+    adj_mask = env._adj_bool.float() if hasattr(env, "_adj_bool") else None
+    if adj_mask is None:
+        adj_mask = torch.zeros((N, N), device=device)
+        for u in range(N):
+            for v in env.get_neighbors(u):
+                adj_mask[u, v] = 1.0
+
+    congest_mask = adj_mask if congest_all_edges else torch.zeros((N, N), device=device)
+    if not congest_all_edges:
+        congest_mask[0, 1] = 1.0
+        congest_mask[2, 3] = 1.0
 
     # (K,N) mask: is_sink[k,u] = 1 iff u is group k's sink. Needed because Rule C's
     # "if u == sink: skip departure" behavior is per-GROUP, not global, so it can't
@@ -61,14 +186,21 @@ def solve_multigroup(env, solvers, T=200, W_max=10, theta_leader=None):
 
             E_total_edges = current_edge_occ.sum(dim=(0, 3)) + tentative_edge_traffic
 
-            E_total_edges_final = torch.zeros((N, N), device=device)
-            E_total_edges_final[0, 1] = E_total_edges[0, 1]
-            E_total_edges_final[2, 3] = E_total_edges[2, 3]
+            E_total_edges_final = E_total_edges * congest_mask
 
-            W_cong_history[h] = torch.clamp(
-                E_total_edges_final * 5.0 + edge_cost + theta_leader,
-                min=0.0, max=float(W_max)
-            )
+            if cost_model == "bpr":
+                # t_e(x_e) = t_e^0 * (1 + alpha * (x_e/C_e)^beta)
+                # NOTE: this REPLACES edge_cost as an additive term -- edge_cost (t_e^0)
+                # is multiplied INTO the congestion factor, not added alongside it, or
+                # the free-flow cost gets double-counted.
+                ratio = E_total_edges_final / capacity.clamp(min=1e-6)
+                travel_time = edge_cost * (1.0 + alpha * ratio.clamp(min=0.0).pow(beta))
+                W_cong_history[h] = torch.clamp(travel_time + theta_leader, min=0.0, max=float(W_max))
+            else:
+                W_cong_history[h] = torch.clamp(
+                    E_total_edges_final / capacity.clamp(min=1e-6) + edge_cost + theta_leader,
+                    min=0.0, max=float(W_max)
+                )
 
             delay = W_cong_history[h]  # (N,N)
             delay_floor = torch.clamp(torch.floor(delay).long(), 0, W_max)  # (N,N)

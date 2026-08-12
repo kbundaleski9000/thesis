@@ -14,11 +14,9 @@ class GraphEdgeMFG_Trainer:
         # Initialize Leader Network mapping historical edge traffic flows
         self.leader_nets = GraphLeaderIncentiveNet(env.N, env.K, solvers[0].H).to(env.device)
         self.optimizer = optim.Adam(self.leader_nets.parameters(), lr=leader_lr)
-        self.OMDsteps = 40
+        self.OMDsteps = 60
 
         self.edge_cost = torch.zeros((self.env.N, self.env.N), device=self.env.device)
-        self.edge_cost[0, 2] = 5.5
-        self.edge_cost[1, 3] = 5.5
 
         
     def compute_social_loss(self, final_flows, W_cong_history):
@@ -32,19 +30,49 @@ class GraphEdgeMFG_Trainer:
         total_social_loss = 0.0
 
         for h in range(H):
-            cost = 1 - final_flows[h, self.env.groups[0]["sink"]]
-            total_social_loss += cost
+            for k in range(self.env.K):
+                cost = self.env.groups[k]["mass"] - final_flows[h, self.env.groups[k]["sink"]]
+                total_social_loss += cost
 
         return total_social_loss
     
     def _prepare_input(self, final_flows, W_cong_history):
-        """Construct structural feature blocks for graph nodes."""
-
-        adj = self.env.A.detach()  # Adjacency matrix (N, N)
-
-        features_final = torch.cat([final_flows.flatten(), W_cong_history.flatten(), 
-                                    self.edge_cost.flatten(), adj.flatten()], dim=0)
-
+        """
+        Normalized version of _prepare_input. Each feature group is scaled to a
+        consistent, well-behaved range using KNOWN theoretical bounds (not on-the-fly
+        batch statistics, which would shift around as training progresses and make
+        the leader's input distribution non-stationary on top of everything else
+        already changing during training).
+    
+        Ranges used:
+        - final_flows:      [0, total_mass]  -> normalize by total mass (usually 1.0)
+        - W_cong_history:    [0, W_max]        -> normalize by W_max
+        - edge_cost:         [0, edge_cost.max()] -> normalize by its own max (computed once)
+        - adj:                already {0,1}     -> left as-is, no normalization needed
+        """
+        adj = self.env.A.detach()  # (N, N)
+    
+        # Total mass across all groups -- the natural upper bound for final_flows.
+        total_mass = sum(g["mass"] for g in self.env.groups)
+        final_flows_norm = final_flows 
+    
+        # W_max isn't currently stored on the trainer -- pass it in or store it at
+        # __init__ time. Using self.W_max here; add `self.W_max = W_max` in __init__.
+        W_cong_norm = W_cong_history   # -> [0, 1]
+    
+        # edge_cost is fixed for the whole training run -- normalize by its own max,
+        # computed once (e.g. in __init__) rather than recomputed every call.
+        edge_cost_norm = self.edge_cost   # -> [0, 1]
+    
+        # adj is already {0, 1} -- no normalization needed.
+    
+        features_final = torch.cat([
+            W_cong_norm.flatten(),
+            final_flows_norm.flatten(),
+            edge_cost_norm.flatten(),
+            adj.flatten()
+        ], dim=0)
+    
         return features_final
 
     def train_step_ds(self, flows_previous, W_cong_history, trainstep):
@@ -74,7 +102,7 @@ class GraphEdgeMFG_Trainer:
 
             # 5. Simulate Agent Response (Inner MFG loop)
             flows_new, final_spatial_flows, policies_new, W_cong_history_new, zeta_history_new = solve_multigroup(
-                self.env, self.solvers, T=50, W_max=15, theta_leader=theta_leader
+                self.env, self.solvers, T=50, W_max=100, theta_leader=theta_leader
             )
 
             # 6. Compute Loss and Backpropagate
@@ -103,7 +131,7 @@ class GraphEdgeMFG_Trainer:
                 policy_target[k] = self.solvers[k].get_policy(zeta_t[k].detach())
         
         # 3. Simulate forward passing the localized target policy and current leader rules
-        flows_sim, final_flows_sim, _, W_cong_sim = self.env.simulate_forward_with_policysimulate_forward_with_policy(
+        flows_sim, final_flows_sim, _, W_cong_sim = self.env.simulate_forward_with_policy(
             policy_sim=policy_target, 
             theta_leader=theta_leader
         )
@@ -111,7 +139,7 @@ class GraphEdgeMFG_Trainer:
         # 4. Compute the Q-values (this represents F(\theta, \zeta_t) in your algorithm)
         # W_max is available via self.solvers[0].W_max or passed in
         q_out = self.solvers[k_group].compute_q_values_with_waiting_time(
-            W_cong_sim, W_max=15, theta_leader=theta_leader
+            W_cong_sim, W_max=100, theta_leader=theta_leader
         )
         
         # 5. Compute the Vector-Jacobian Product directly using PyTorch's autograd tool
@@ -135,7 +163,7 @@ class GraphEdgeMFG_Trainer:
         node_mass, edge_occ, final_flows, policies, W_cong_history = self.env.simulate_forward_with_policy(
             zeta=zeta_target,
             theta_leader=theta_leader_val,
-            W_max=15   # fix: was silently defaulting to 3
+            W_max=100   # fix: was silently defaulting to 3
         )
 
         loss_G = self.compute_social_loss(final_flows, W_cong_history)  # use freshly computed W_cong, not stale arg
@@ -161,7 +189,7 @@ class GraphEdgeMFG_Trainer:
         node_mass, edge_occ, final_flows, policies, W_cong_history = self.env.simulate_forward_with_policy(
             zeta=zeta_fixed,
             theta_leader=theta_target,
-            W_max=15
+            W_max=100
         )
 
         loss_G = self.compute_social_loss(final_flows, W_cong_history)
@@ -186,7 +214,7 @@ class GraphEdgeMFG_Trainer:
         q_outputs = []
         for k in range(self.env.K):
             q_k = self.solvers[k].compute_q_values_with_waiting_time(
-                W_cong_sim, W_max=15, theta_leader=theta_leader_val
+                W_cong_sim, W_max=100, theta_leader=theta_leader_val
             )
             q_outputs.append(q_k)
         q_outputs = torch.stack(q_outputs, dim=0)
@@ -215,14 +243,14 @@ class GraphEdgeMFG_Trainer:
         _, _, _, _, W_cong_sim = self.env.simulate_forward_with_policy(
             zeta=zeta_fixed,
             theta_leader=theta_target,
-            W_max=15   # must match the true rollout's W_max
+            W_max=100   # must match the true rollout's W_max
         )
 
         # 4. Run B: congestion + theta_target -> Q-values, per group (own sink, not group 0)
         q_outputs = []
         for k in range(self.env.K):
             q_k = self.solvers[k].compute_q_values_with_waiting_time(
-                W_cong_sim, W_max=15, theta_leader=theta_target
+                W_cong_sim, W_max=100, theta_leader=theta_target
             )
             q_outputs.append(q_k)
         q_outputs = torch.stack(q_outputs, dim=0)
@@ -253,16 +281,17 @@ class GraphEdgeMFG_Trainer:
         for solver, z0 in zip(self.solvers, self.initial_zetas):
             solver.zeta = z0.clone()
 
-        print(f"Iteration {iteration}: Leader theta_leader =\n{theta_leader.detach()}")
-
         T_steps = self.OMDsteps
-
+        
         with torch.no_grad():
             _, _, final_flows_new, policies_new, W_cong_history_new, zeta_history = solve_multigroup(
-                self.env, self.solvers, T=T_steps, W_max=15, theta_leader=theta_leader.detach().clone()
+                self.env, self.solvers, T=T_steps, W_max=100, theta_leader=theta_leader.detach().clone(),
+                edge_cost=self.edge_cost, congest_all_edges=True
             )
 
-        exploitability, V_best, V_pi = self.solvers[0].compute_exploitability(W_cong_history, W_max=15, theta_leader=theta_leader)
+        print(zeta_history.shape)
+
+        exploitability, V_best, V_pi = self.solvers[0].compute_exploitability(W_cong_history_new, W_max=100, theta_leader=theta_leader.detach().clone())
         print(f"Exploitability: {exploitability}")
 
         social_loss = self.compute_social_loss(final_flows_new, W_cong_history_new)
@@ -291,7 +320,7 @@ class GraphEdgeMFG_Trainer:
         loss_surrogate = torch.sum(theta_leader * s_adjoint.detach())
         loss_surrogate.backward()
 
-        torch.nn.utils.clip_grad_norm_(self.leader_nets.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.leader_nets.parameters(), max_norm=3.0)
         self.optimizer.step()
 
         theta_leader_out = theta_leader.detach()

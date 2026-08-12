@@ -36,21 +36,34 @@ class GraphWorldMFG_MultiGroup:
         policy = torch.where(self._has_neighbors.view(1, -1, 1), policy, torch.zeros_like(policy))
         return policy
 
-    def simulate_forward_with_policy(self, zeta, W_max=15, theta_leader=None):
+    def simulate_forward_with_policy(self, zeta, W_max=15, theta_leader=None, edge_cost=None,
+                                      congest_all_edges=True, capacity=None, alpha=0.15, beta=4.0,
+                                      cost_model="linear"):
         """
-        Vectorized version of the forward rollout. Numerically identical to the
-        loop-based version -- inner Python loops over (k, u, v) replaced with
-        masked/batched tensor operations, exactly mirroring the vectorization
-        applied to solve_multigroup's forward pass (see solver_vectorized.py).
-        The loop over h (time) remains a genuine Python loop -- it is inherently
-        sequential and cannot be vectorized away.
+        Vectorized version of the forward rollout.
+
+        FIX: edge_cost and the congestion mask are now real parameters instead of
+        hardcoded for two specific edges -- see solve_multigroup in solver.py for
+        the full explanation of why (the old hardcoding was specific to the small
+        4-node test network and silently left every other edge free and
+        congestion-insensitive on a larger graph).
         """
         K, H, N = self.K, self.H, self.N
         device = self.device
 
-        edge_cost = torch.zeros((N, N), device=device)
-        edge_cost[0, 2] = 5.5
-        edge_cost[1, 3] = 5.5
+        if edge_cost is None:
+            edge_cost = torch.zeros((N, N), device=device)
+
+        if cost_model == "bpr" and capacity is None:
+            raise ValueError(
+                "cost_model='bpr' requires a real capacity tensor -- pass capacity=... "
+                "explicitly, scaled to match your mass units."
+            )
+
+        congest_mask = self._adj_bool.float() if congest_all_edges else torch.zeros((N, N), device=device)
+        if not congest_all_edges:
+            congest_mask[0, 1] = 1.0
+            congest_mask[2, 3] = 1.0
 
         policies = torch.stack([self.get_policy(zeta[k]) for k in range(K)], dim=0)  # (K,H,N,N)
 
@@ -77,14 +90,17 @@ class GraphWorldMFG_MultiGroup:
             tentative_edge_traffic = torch.einsum('ku,kuv->uv', current_node_mass, pol_h) * self._adj_bool.float()
 
             E_total_edges = current_edge_occ.sum(dim=(0, 3)) + tentative_edge_traffic
-            E_total_edges_final = torch.zeros((N, N), device=device)
-            E_total_edges_final[0, 1] = E_total_edges[0, 1]
-            E_total_edges_final[2, 3] = E_total_edges[2, 3]
+            E_total_edges_final = E_total_edges * congest_mask
 
-            W_cong_history[h] = torch.clamp(
-                E_total_edges_final * 5.0 + edge_cost + theta_leader,
-                min=0.0, max=float(W_max)
-            )
+            if cost_model == "bpr":
+                ratio = E_total_edges_final / capacity.clamp(min=1e-6)
+                travel_time = edge_cost * (1.0 + alpha * ratio.clamp(min=0.0).pow(beta))
+                W_cong_history[h] = torch.clamp(travel_time + theta_leader, min=0.0, max=float(W_max))
+            else:
+                W_cong_history[h] = torch.clamp(
+                    E_total_edges_final * 5.0 + edge_cost + theta_leader,
+                    min=0.0, max=float(W_max)
+                )
 
             delay = W_cong_history[h]
             delay_floor = torch.clamp(torch.floor(delay).long(), 0, W_max)

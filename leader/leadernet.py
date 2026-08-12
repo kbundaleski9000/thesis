@@ -51,16 +51,16 @@ class GraphLeaderIncentiveNet(nn.Module):
         
         # 1. Total features for the WHOLE graph = N nodes * (3 * K features per node)
         # For N=4, K=1, this equals 4 * 3 = 12 input features
-        global_input_dim =          self.H * self.N * self.N       +      2 * self.N * self.N         +          self.H * self.N
+        global_input_dim =   2 * self.N * self.N         +          self.H * self.N       + self.H * self.N * self.N         
         
         # 2. Total output elements needed = K groups * N from_nodes * N to_nodes
         # For N=4, K=1, this equals 1 * 4 * 4 = 16 output elements
         global_output_dim = 1 * self.N * self.N
         
         self.mlp = nn.Sequential(
-            nn.Linear(global_input_dim, 128), nn.ReLU(),
-            nn.Linear(128, 128),               nn.ReLU(),
-            nn.Linear(128, global_output_dim) # Outputs exactly 16 values globally
+            nn.Linear(global_input_dim, 4096), nn.ReLU(),
+            nn.Linear(4096, 2048),                nn.ReLU(),
+            nn.Linear(2048, global_output_dim) # Outputs exactly 16 values globally
         )
         self.activation = nn.Sigmoid()
 
