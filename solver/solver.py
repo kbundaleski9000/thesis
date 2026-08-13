@@ -5,8 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 
 
-def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cost=None,
-                      congest_all_edges=True, capacity=None, alpha=0.15, beta=4.0,
+def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cost=None, capacity=None, alpha=0.15, beta=4.0,
                       cost_model="linear"):
     """
     Vectorized version of the MFG execution loop.
@@ -137,6 +136,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
     capacity[23, 22] = 0.014083
 
     capacity.sqrt_()
+    capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
 
     if cost_model == "bpr" and capacity is None:
         raise ValueError(
@@ -151,11 +151,6 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
         for u in range(N):
             for v in env.get_neighbors(u):
                 adj_mask[u, v] = 1.0
-
-    congest_mask = adj_mask if congest_all_edges else torch.zeros((N, N), device=device)
-    if not congest_all_edges:
-        congest_mask[0, 1] = 1.0
-        congest_mask[2, 3] = 1.0
 
     # (K,N) mask: is_sink[k,u] = 1 iff u is group k's sink. Needed because Rule C's
     # "if u == sink: skip departure" behavior is per-GROUP, not global, so it can't
@@ -186,7 +181,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
 
             E_total_edges = current_edge_occ.sum(dim=(0, 3)) + tentative_edge_traffic
 
-            E_total_edges_final = E_total_edges * congest_mask
+            E_total_edges_final = E_total_edges 
 
             if cost_model == "bpr":
                 # t_e(x_e) = t_e^0 * (1 + alpha * (x_e/C_e)^beta)

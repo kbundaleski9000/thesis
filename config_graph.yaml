@@ -62,12 +62,12 @@ groups:
 
 
 trainer:
-  leader_lr: 0.0003
+  leader_lr: 0.0005
   num_epochs: 100
   leader_loss_objective: "social_optimum"
 
 solver:
-  eta: 0.05
+  eta: 0.10
   tau: 0.05
   T: 25
   alpha: 1.0

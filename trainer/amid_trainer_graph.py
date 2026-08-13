@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from leader.leadernet import GraphLeaderIncentiveNet
+from leader.leadernet import GraphLeaderIncentiveNet, GraphLeaderIncentiveNetCNN
 from solver.solver import solve_multigroup
 
 class GraphEdgeMFG_Trainer:
@@ -12,9 +12,9 @@ class GraphEdgeMFG_Trainer:
         self.initial_zetas = [s.zeta.clone() for s in solvers]
 
         # Initialize Leader Network mapping historical edge traffic flows
-        self.leader_nets = GraphLeaderIncentiveNet(env.N, env.K, solvers[0].H).to(env.device)
+        self.leader_nets = GraphLeaderIncentiveNetCNN(env.N, env.K, solvers[0].H).to(env.device)
         self.optimizer = optim.Adam(self.leader_nets.parameters(), lr=leader_lr)
-        self.OMDsteps = 60
+        self.OMDsteps = 50
 
         self.edge_cost = torch.zeros((self.env.N, self.env.N), device=self.env.device)
 
@@ -65,12 +65,109 @@ class GraphEdgeMFG_Trainer:
         edge_cost_norm = self.edge_cost   # -> [0, 1]
     
         # adj is already {0, 1} -- no normalization needed.
+        capacity = torch.zeros((self.env.N, self.env.N))
+        capacity[0, 1] = 0.071825
+        capacity[0, 2] = 0.064901
+        capacity[1, 0] = 0.071825
+        capacity[1, 5] = 0.013750
+        capacity[2, 0] = 0.064901
+
+        capacity[2, 3] = 0.047450
+        capacity[2, 11] = 0.064901
+        capacity[3, 2] = 0.047450
+        capacity[3, 4] = 0.049314
+        capacity[3, 10] = 0.013613
+
+        capacity[4, 3] = 0.049314
+        capacity[4, 5] = 0.013722
+        capacity[4, 8] = 0.027732
+        capacity[5, 1] = 0.013750
+        capacity[5, 4] = 0.013722
+
+        capacity[5, 7] = 0.013585
+        capacity[6, 7] = 0.021747
+        capacity[6, 17] = 0.064901
+        capacity[7, 5] = 0.013585
+        capacity[7, 6] = 0.021747
+
+        capacity[7, 8] = 0.014005
+        capacity[7, 15] = 0.013993
+        capacity[8, 4] = 0.027732
+        capacity[8, 7] = 0.014005
+        capacity[8, 9] = 0.038591
+
+        capacity[9, 8] = 0.038591
+        capacity[9, 10] = 0.027732
+        capacity[9, 14] = 0.037471
+        capacity[9, 15] = 0.013463
+        capacity[9, 16] = 0.013848
+
+        capacity[10, 3] = 0.013613
+        capacity[10, 9] = 0.027732
+        capacity[10, 11] = 0.013613
+        capacity[10, 13] = 0.013523
+        capacity[11, 2] = 0.064901
+
+        capacity[11, 10] = 0.013613
+        capacity[11, 12] = 0.071825
+        capacity[12, 11] = 0.071825
+        capacity[12, 23] = 0.014119
+        capacity[13, 10] = 0.013523
+
+        capacity[13, 14] = 0.014219
+        capacity[13, 22] = 0.013657
+        capacity[14, 9] = 0.037471
+        capacity[14, 13] = 0.014219
+        capacity[14, 18] = 0.040390
+
+        capacity[14, 21] = 0.026620
+        capacity[15, 7] = 0.013993
+        capacity[15, 9] = 0.013463
+        capacity[15, 16] = 0.014503
+        capacity[15, 17] = 0.054575
+
+        capacity[16, 9] = 0.013848
+        capacity[16, 15] = 0.014503
+        capacity[16, 18] = 0.013378
+        capacity[17, 6] = 0.064901
+        capacity[17, 15] = 0.054575
+
+        capacity[17, 19] = 0.064901
+        capacity[18, 14] = 0.040390
+        capacity[18, 16] = 0.013378
+        capacity[18, 19] = 0.013873
+        capacity[19, 17] = 0.064901
+
+        capacity[19, 18] = 0.013873
+        capacity[19, 20] = 0.014032
+        capacity[19, 21] = 0.014076
+        capacity[20, 19] = 0.014032
+        capacity[20, 21] = 0.014503
+
+        capacity[20, 23] = 0.013548
+        capacity[21, 14] = 0.026620
+        capacity[21, 19] = 0.014076
+        capacity[21, 20] = 0.014503
+        capacity[21, 22] = 0.013866
+
+
+        capacity[22, 13] = 0.013657
+        capacity[22, 21] = 0.013866
+        capacity[22, 23] = 0.014083
+        capacity[23, 12] = 0.014119
+        capacity[23, 20] = 0.013548
+
+        capacity[23, 22] = 0.014083
+
+        capacity.sqrt_()
+        capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
     
         features_final = torch.cat([
             W_cong_norm.flatten(),
             final_flows_norm.flatten(),
             edge_cost_norm.flatten(),
-            adj.flatten()
+            adj.flatten(),
+            capacity.flatten()
         ], dim=0)
     
         return features_final
@@ -273,10 +370,10 @@ class GraphEdgeMFG_Trainer:
             final_flows = torch.zeros((self.env.H, self.env.N), device=self.env.device)
             base_cong = torch.zeros((self.env.H, self.env.N, self.env.N), device=self.env.device)
             inp = self._prepare_input(final_flows, base_cong)
-            theta_leader = self.leader_nets(inp)
+            theta_leader = self.leader_nets(final_flows, W_cong_history, self.edge_cost, self.env.A)
         else:
             inp = self._prepare_input(final_flows, W_cong_history)
-            theta_leader = self.leader_nets(inp)
+            theta_leader = self.leader_nets(final_flows, W_cong_history, self.edge_cost, self.env.A)
 
         for solver, z0 in zip(self.solvers, self.initial_zetas):
             solver.zeta = z0.clone()
@@ -286,7 +383,7 @@ class GraphEdgeMFG_Trainer:
         with torch.no_grad():
             _, _, final_flows_new, policies_new, W_cong_history_new, zeta_history = solve_multigroup(
                 self.env, self.solvers, T=T_steps, W_max=100, theta_leader=theta_leader.detach().clone(),
-                edge_cost=self.edge_cost, congest_all_edges=True
+                edge_cost=self.edge_cost
             )
 
         print(zeta_history.shape)
@@ -320,7 +417,7 @@ class GraphEdgeMFG_Trainer:
         loss_surrogate = torch.sum(theta_leader * s_adjoint.detach())
         loss_surrogate.backward()
 
-        torch.nn.utils.clip_grad_norm_(self.leader_nets.parameters(), max_norm=3.0)
+        torch.nn.utils.clip_grad_norm_(self.leader_nets.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         theta_leader_out = theta_leader.detach()
