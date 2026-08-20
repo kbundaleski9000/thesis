@@ -71,7 +71,7 @@ solver:
   tau: 0.05
   T: 25
   alpha: 1.0
-  H: 75
+  H: 50
 
 capacity:
     capacity[0, 1] = 0.071825

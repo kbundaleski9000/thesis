@@ -16,54 +16,7 @@ class GraphEdgeMFG_Trainer:
         self.optimizer = optim.Adam(self.leader_nets.parameters(), lr=leader_lr)
         self.OMDsteps = 50
 
-        self.edge_cost = torch.zeros((self.env.N, self.env.N), device=self.env.device)
-
-        
-    def compute_social_loss(self, final_flows, W_cong_history):
-        """
-        Calculates total travel times as social loss.
-        
-        Under the indicator reward structure, the loss is the integration of all 
-        population mass that hasn't arrived at its destination sink yet.
-        """
-        H, N = final_flows.shape
-        total_social_loss = 0.0
-
-        for h in range(H):
-            for k in range(self.env.K):
-                cost = self.env.groups[k]["mass"] - final_flows[h, self.env.groups[k]["sink"]]
-                total_social_loss += cost
-
-        return total_social_loss
-    
-    def _prepare_input(self, final_flows, W_cong_history):
-        """
-        Normalized version of _prepare_input. Each feature group is scaled to a
-        consistent, well-behaved range using KNOWN theoretical bounds (not on-the-fly
-        batch statistics, which would shift around as training progresses and make
-        the leader's input distribution non-stationary on top of everything else
-        already changing during training).
-    
-        Ranges used:
-        - final_flows:      [0, total_mass]  -> normalize by total mass (usually 1.0)
-        - W_cong_history:    [0, W_max]        -> normalize by W_max
-        - edge_cost:         [0, edge_cost.max()] -> normalize by its own max (computed once)
-        - adj:                already {0,1}     -> left as-is, no normalization needed
-        """
-        adj = self.env.A.detach()  # (N, N)
-    
-        # Total mass across all groups -- the natural upper bound for final_flows.
-        total_mass = sum(g["mass"] for g in self.env.groups)
-        final_flows_norm = final_flows 
-    
-        # W_max isn't currently stored on the trainer -- pass it in or store it at
-        # __init__ time. Using self.W_max here; add `self.W_max = W_max` in __init__.
-        W_cong_norm = W_cong_history   # -> [0, 1]
-    
-        # edge_cost is fixed for the whole training run -- normalize by its own max,
-        # computed once (e.g. in __init__) rather than recomputed every call.
-        edge_cost_norm = self.edge_cost   # -> [0, 1]
-    
+        self.edge_cost = torch.zeros((self.env.N, self.env.N), device=self.env.device) + 2.0
         # adj is already {0, 1} -- no normalization needed.
         capacity = torch.zeros((self.env.N, self.env.N))
         capacity[0, 1] = 0.071825
@@ -161,13 +114,131 @@ class GraphEdgeMFG_Trainer:
 
         capacity.sqrt_()
         capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
+
+        self.capacity = capacity
+
+        
+    def compute_social_loss(self, final_flows, W_cong_history):
+        """
+        Calculates total travel times as social loss.
+        
+        Under the indicator reward structure, the loss is the integration of all 
+        population mass that hasn't arrived at its destination sink yet.
+        """
+        H, N = final_flows.shape
+        total_social_loss = 0.0
+
+        for h in range(H):
+            for k in range(self.env.K):
+                cost = self.env.groups[k]["mass"] - final_flows[h, self.env.groups[k]["sink"]]
+                total_social_loss += cost
+
+        return total_social_loss
+    
+    def compute_congestion_penalty_loss(self, edge_occ, normalize_by_capacity=True):
+        """
+        Load-balancing / peak-congestion penalty: sum_h sum_{u,v} (x_e[h,u,v])^2,
+        or (x_e[h,u,v] / capacity[u,v])^2 if normalize_by_capacity=True.
+    
+        NOTE: this requires edge_occ (K, H, N, N, W_max+1), NOT W_cong_history --
+        W_cong_history is DELAY, not flow. edge_occ is what solve_multigroup
+        already returns but train_step currently discards (`_, _, final_flows_new,
+        ...`). You'll need to keep it: change that line to capture edge_occ_new,
+        and pass it into this function instead of/alongside W_cong_history.
+    
+        Args:
+            edge_occ: (K, H, N, N, W_max+1) tensor from solve_multigroup's return.
+            normalize_by_capacity: if True, divides by self.capacity (per-edge)
+                before squaring -- requires self.capacity to be set (an (N,N)
+                tensor), the same way self.edge_cost is already set in __init__.
+                If False, computes raw flow^2 (no capacity normalization).
+    
+        Returns: scalar tensor, differentiable w.r.t. whatever edge_occ traces
+            back to (e.g. theta_leader, if this is called on a fresh, live
+            edge_occ inside compute_loss_derivative_wrt_theta_direct-style code --
+            NOT on a .detach()'d one from train_step's no_grad() forward pass).
+        """
+        # x_e[h,u,v] = total mass occupying edge (u,v) at time h, summed over
+        # groups (K) and wait-tiers (last dim) -- same reduction used throughout
+        # this project's diagnostics (e.g. "occ_per_edge = edge_occ.sum(dim=(0,-1))").
+        edge_flows = edge_occ.sum(dim=(0, -1))  # (H, N, N)
+    
+        if normalize_by_capacity:
+            if not hasattr(self, "capacity"):
+                raise AttributeError(
+                    "compute_congestion_penalty_loss(normalize_by_capacity=True) "
+                    "requires self.capacity (an (N,N) tensor) to be set in __init__, "
+                    "the same way self.edge_cost already is."
+                )
+            # clamp(min=1e-6) avoids division by zero on non-edges / zero-capacity entries
+            ratio = edge_flows / self.capacity.clamp(min=1e-6)
+        else:
+            ratio = edge_flows
+    
+        # Mask to valid edges only -- non-edges have edge_flows=0 anyway (nothing
+        # can occupy a nonexistent edge), so squaring zero contributes zero; this
+        # mask is mostly a safety net in case capacity has stray nonzero entries
+        # on non-edges.
+        adj_mask = self.env.A.detach()  # (N,N), 0/1
+        penalty = (ratio.pow(2) * adj_mask.unsqueeze(0)).sum()
+    
+        return penalty
+    
+    
+    def congestion_loss(self, edge_occ, lam=1.0, normalize_by_capacity=True):
+        """
+        total_travel_time + lam * congestion_penalty, letting you trade off
+        between minimizing total travel time (the verified-correct existing
+        objective) and discouraging any single edge from becoming severely
+        overloaded relative to its capacity.
+    
+        lam=0 recovers the existing compute_social_loss exactly. Start small
+        (e.g. 0.01-0.1) and increase only if you actually want load-balancing
+        to visibly trade off against raw travel time -- a large lam can pull
+        the solution away from the true travel-time-minimizing optimum, which
+        is the whole point of using this as a deliberate, tunable regularizer
+        rather than always defaulting to it.
+        """
+        congestion_penalty = self.compute_congestion_penalty_loss(edge_occ, normalize_by_capacity)
+        return lam * congestion_penalty
+    
+    def _prepare_input(self, final_flows, W_cong_history):
+        """
+        Normalized version of _prepare_input. Each feature group is scaled to a
+        consistent, well-behaved range using KNOWN theoretical bounds (not on-the-fly
+        batch statistics, which would shift around as training progresses and make
+        the leader's input distribution non-stationary on top of everything else
+        already changing during training).
+    
+        Ranges used:
+        - final_flows:      [0, total_mass]  -> normalize by total mass (usually 1.0)
+        - W_cong_history:    [0, W_max]        -> normalize by W_max
+        - edge_cost:         [0, edge_cost.max()] -> normalize by its own max (computed once)
+        - adj:                already {0,1}     -> left as-is, no normalization needed
+        """
+        adj = self.env.A.detach()  # (N, N)
+    
+        # Total mass across all groups -- the natural upper bound for final_flows.
+        total_mass = sum(g["mass"] for g in self.env.groups)
+        final_flows_norm = final_flows 
+    
+        # W_max isn't currently stored on the trainer -- pass it in or store it at
+        # __init__ time. Using self.W_max here; add `self.W_max = W_max` in __init__.
+        W_cong_norm = W_cong_history   # -> [0, 1]
+    
+        # edge_cost is fixed for the whole training run -- normalize by its own max,
+        # computed once (e.g. in __init__) rather than recomputed every call.
+        edge_cost_norm = self.edge_cost   # -> [0, 1]
+
+        capacity_ = self.capacity
+    
     
         features_final = torch.cat([
             W_cong_norm.flatten(),
             final_flows_norm.flatten(),
             edge_cost_norm.flatten(),
             adj.flatten(),
-            capacity.flatten()
+            capacity_.flatten()
         ], dim=0)
     
         return features_final
@@ -381,7 +452,7 @@ class GraphEdgeMFG_Trainer:
         T_steps = self.OMDsteps
         
         with torch.no_grad():
-            _, _, final_flows_new, policies_new, W_cong_history_new, zeta_history = solve_multigroup(
+            _, edge_occ_new, final_flows_new, policies_new, W_cong_history_new, zeta_history = solve_multigroup(
                 self.env, self.solvers, T=T_steps, W_max=100, theta_leader=theta_leader.detach().clone(),
                 edge_cost=self.edge_cost
             )
@@ -392,6 +463,7 @@ class GraphEdgeMFG_Trainer:
         print(f"Exploitability: {exploitability}")
 
         social_loss = self.compute_social_loss(final_flows_new, W_cong_history_new)
+        congestion_loss = self.congestion_loss(edge_occ=edge_occ_new)
 
         s_adjoint = self.compute_loss_derivative_wrt_theta_direct(
             zeta_history[T_steps - 1], theta_leader
@@ -422,4 +494,4 @@ class GraphEdgeMFG_Trainer:
 
         theta_leader_out = theta_leader.detach()
 
-        return social_loss, final_flows_new, W_cong_history_new, theta_leader_out
+        return social_loss, final_flows_new, W_cong_history_new, theta_leader_out, congestion_loss

@@ -39,7 +39,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
     device = env.device
 
     if edge_cost is None:
-        edge_cost = torch.zeros((N, N), device=device)
+        edge_cost = torch.zeros((N, N), device=device) + 2.0
 
     capacity = torch.zeros((N, N), device=device)
     capacity[0, 1] = 0.071825

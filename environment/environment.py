@@ -49,10 +49,107 @@ class GraphWorldMFG_MultiGroup:
         congestion-insensitive on a larger graph).
         """
         K, H, N = self.K, self.H, self.N
-        device = self.device
+        device = self.device    
+
+        capacity = torch.zeros((N, N), device=device)
+        capacity[0, 1] = 0.071825
+        capacity[0, 2] = 0.064901
+        capacity[1, 0] = 0.071825
+        capacity[1, 5] = 0.013750
+        capacity[2, 0] = 0.064901
+
+        capacity[2, 3] = 0.047450
+        capacity[2, 11] = 0.064901
+        capacity[3, 2] = 0.047450
+        capacity[3, 4] = 0.049314
+        capacity[3, 10] = 0.013613
+
+        capacity[4, 3] = 0.049314
+        capacity[4, 5] = 0.013722
+        capacity[4, 8] = 0.027732
+        capacity[5, 1] = 0.013750
+        capacity[5, 4] = 0.013722
+
+        capacity[5, 7] = 0.013585
+        capacity[6, 7] = 0.021747
+        capacity[6, 17] = 0.064901
+        capacity[7, 5] = 0.013585
+        capacity[7, 6] = 0.021747
+
+        capacity[7, 8] = 0.014005
+        capacity[7, 15] = 0.013993
+        capacity[8, 4] = 0.027732
+        capacity[8, 7] = 0.014005
+        capacity[8, 9] = 0.038591
+
+        capacity[9, 8] = 0.038591
+        capacity[9, 10] = 0.027732
+        capacity[9, 14] = 0.037471
+        capacity[9, 15] = 0.013463
+        capacity[9, 16] = 0.013848
+
+        capacity[10, 3] = 0.013613
+        capacity[10, 9] = 0.027732
+        capacity[10, 11] = 0.013613
+        capacity[10, 13] = 0.013523
+        capacity[11, 2] = 0.064901
+
+        capacity[11, 10] = 0.013613
+        capacity[11, 12] = 0.071825
+        capacity[12, 11] = 0.071825
+        capacity[12, 23] = 0.014119
+        capacity[13, 10] = 0.013523
+
+        capacity[13, 14] = 0.014219
+        capacity[13, 22] = 0.013657
+        capacity[14, 9] = 0.037471
+        capacity[14, 13] = 0.014219
+        capacity[14, 18] = 0.040390
+
+        capacity[14, 21] = 0.026620
+        capacity[15, 7] = 0.013993
+        capacity[15, 9] = 0.013463
+        capacity[15, 16] = 0.014503
+        capacity[15, 17] = 0.054575
+
+        capacity[16, 9] = 0.013848
+        capacity[16, 15] = 0.014503
+        capacity[16, 18] = 0.013378
+        capacity[17, 6] = 0.064901
+        capacity[17, 15] = 0.054575
+
+        capacity[17, 19] = 0.064901
+        capacity[18, 14] = 0.040390
+        capacity[18, 16] = 0.013378
+        capacity[18, 19] = 0.013873
+        capacity[19, 17] = 0.064901
+
+        capacity[19, 18] = 0.013873
+        capacity[19, 20] = 0.014032
+        capacity[19, 21] = 0.014076
+        capacity[20, 19] = 0.014032
+        capacity[20, 21] = 0.014503
+
+        capacity[20, 23] = 0.013548
+        capacity[21, 14] = 0.026620
+        capacity[21, 19] = 0.014076
+        capacity[21, 20] = 0.014503
+        capacity[21, 22] = 0.013866
+
+
+        capacity[22, 13] = 0.013657
+        capacity[22, 21] = 0.013866
+        capacity[22, 23] = 0.014083
+        capacity[23, 12] = 0.014119
+        capacity[23, 20] = 0.013548
+
+        capacity[23, 22] = 0.014083
+
+        capacity.sqrt_()
+        capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
 
         if edge_cost is None:
-            edge_cost = torch.zeros((N, N), device=device)
+            edge_cost = torch.zeros((N, N), device=device) + 2.0
 
         if cost_model == "bpr" and capacity is None:
             raise ValueError(
@@ -98,7 +195,7 @@ class GraphWorldMFG_MultiGroup:
                 W_cong_history[h] = torch.clamp(travel_time + theta_leader, min=0.0, max=float(W_max))
             else:
                 W_cong_history[h] = torch.clamp(
-                    E_total_edges_final * 5.0 + edge_cost + theta_leader,
+                    E_total_edges_final / capacity.clamp(min=1e-6) + edge_cost + theta_leader,
                     min=0.0, max=float(W_max)
                 )
 
