@@ -139,13 +139,6 @@ class GraphEdgeMFG_Trainer:
         """
         Load-balancing / peak-congestion penalty: sum_h sum_{u,v} (x_e[h,u,v])^2,
         or (x_e[h,u,v] / capacity[u,v])^2 if normalize_by_capacity=True.
-    
-        NOTE: this requires edge_occ (K, H, N, N, W_max+1), NOT W_cong_history --
-        W_cong_history is DELAY, not flow. edge_occ is what solve_multigroup
-        already returns but train_step currently discards (`_, _, final_flows_new,
-        ...`). You'll need to keep it: change that line to capture edge_occ_new,
-        and pass it into this function instead of/alongside W_cong_history.
-    
         Args:
             edge_occ: (K, H, N, N, W_max+1) tensor from solve_multigroup's return.
             normalize_by_capacity: if True, divides by self.capacity (per-edge)
@@ -158,9 +151,6 @@ class GraphEdgeMFG_Trainer:
             edge_occ inside compute_loss_derivative_wrt_theta_direct-style code --
             NOT on a .detach()'d one from train_step's no_grad() forward pass).
         """
-        # x_e[h,u,v] = total mass occupying edge (u,v) at time h, summed over
-        # groups (K) and wait-tiers (last dim) -- same reduction used throughout
-        # this project's diagnostics (e.g. "occ_per_edge = edge_occ.sum(dim=(0,-1))").
         edge_flows = edge_occ.sum(dim=(0, -1))  # (H, N, N)
     
         if normalize_by_capacity:
@@ -175,12 +165,8 @@ class GraphEdgeMFG_Trainer:
         else:
             ratio = edge_flows
     
-        # Mask to valid edges only -- non-edges have edge_flows=0 anyway (nothing
-        # can occupy a nonexistent edge), so squaring zero contributes zero; this
-        # mask is mostly a safety net in case capacity has stray nonzero entries
-        # on non-edges.
         adj_mask = self.env.A.detach()  # (N,N), 0/1
-        penalty = (ratio.pow(2) * adj_mask.unsqueeze(0)).sum()
+        penalty = (ratio.abs() * adj_mask.unsqueeze(0)).sum()
     
         return penalty
     
@@ -218,16 +204,13 @@ class GraphEdgeMFG_Trainer:
         """
         adj = self.env.A.detach()  # (N, N)
     
-        # Total mass across all groups -- the natural upper bound for final_flows.
         total_mass = sum(g["mass"] for g in self.env.groups)
         final_flows_norm = final_flows 
     
         # W_max isn't currently stored on the trainer -- pass it in or store it at
-        # __init__ time. Using self.W_max here; add `self.W_max = W_max` in __init__.
         W_cong_norm = W_cong_history   # -> [0, 1]
     
         # edge_cost is fixed for the whole training run -- normalize by its own max,
-        # computed once (e.g. in __init__) rather than recomputed every call.
         edge_cost_norm = self.edge_cost   # -> [0, 1]
 
         capacity_ = self.capacity
@@ -251,16 +234,11 @@ class GraphEdgeMFG_Trainer:
 
             if trainstep == 1:
             # OPTION A: If you want the network to train on iteration 1, 
-                # feed dummy/zero placeholder features through your network:
                 spatial_flows = torch.zeros((self.env.K, self.env.H, self.env.N), device=self.env.device)
                 base_cong = torch.zeros((self.env.H, self.env.N, self.env.N), device=self.env.device)
                 
                 inp = self._prepare_input(spatial_flows, base_cong)
                 theta_leader = self.leader_nets(inp)
-
-            # OPTION B: If you strictly want a hardcoded flat zero matrix for step 1,
-            # you MUST explicitly tell PyTorch to track its gradients:
-            # theta_leader = torch.zeros((self.env.N, self.env.N), device=self.env.device, requires_grad=True)
 
             else:
                 # 1. Prepare the input features for the leader network
@@ -305,13 +283,11 @@ class GraphEdgeMFG_Trainer:
         )
         
         # 4. Compute the Q-values (this represents F(\theta, \zeta_t) in your algorithm)
-        # W_max is available via self.solvers[0].W_max or passed in
         q_out = self.solvers[k_group].compute_q_values_with_waiting_time(
             W_cong_sim, W_max=100, theta_leader=theta_leader
         )
         
         # 5. Compute the Vector-Jacobian Product directly using PyTorch's autograd tool
-        # grad_outputs=a_t tells PyTorch to calculate a_t * (dq_out / dzeta_input)
         vjp = torch.autograd.grad(
             outputs=q_out,
             inputs=zeta_target,
@@ -334,7 +310,7 @@ class GraphEdgeMFG_Trainer:
             W_max=100   # fix: was silently defaulting to 3
         )
 
-        loss_G = self.compute_social_loss(final_flows, W_cong_history)  # use freshly computed W_cong, not stale arg
+        loss_G = self.congestion_loss(edge_occ=edge_occ)  # use freshly computed W_cong, not stale arg
         grad_zeta = torch.autograd.grad(outputs=loss_G, inputs=zeta_target)[0]
 
         return grad_zeta.detach()   # shape (K,H,N,N)
@@ -360,7 +336,7 @@ class GraphEdgeMFG_Trainer:
             W_max=100
         )
 
-        loss_G = self.compute_social_loss(final_flows, W_cong_history)
+        loss_G = self.congestion_loss(edge_occ = edge_occ)
         grad_theta = torch.autograd.grad(outputs=loss_G, inputs=theta_target)[0]
 
         return grad_theta.detach()   # shape (N, N)
@@ -388,7 +364,6 @@ class GraphEdgeMFG_Trainer:
         q_outputs = torch.stack(q_outputs, dim=0)
         
         # 4. Compute the exact isolated Vector-Jacobian Product
-        # FIX: We add [0] at the end to unpack the single Tensor out of the autograd tuple!
         vjp = torch.autograd.grad(
             outputs=q_outputs,
             inputs=zeta_target,
