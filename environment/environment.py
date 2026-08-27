@@ -173,10 +173,13 @@ class GraphWorldMFG_MultiGroup:
             is_sink[k, self.groups[k]["sink"]] = 1.0
             sources[k, self.groups[k]["source"]] = self.groups[k]["mass"]
 
+        
+        not_sink_mask = 1.0 - is_sink
         node_mass_list = [sources]
         edge_occ_list = [torch.zeros((K, N, N, W_max + 1), device=device)]
 
         W_cong_history = torch.zeros((H, N, N), device=device)
+        W_parts = torch.zeros((3, H, N, N), device=device)
 
         for h in range(H - 1):
             current_node_mass = node_mass_list[h]      # (K,N)
@@ -184,20 +187,25 @@ class GraphWorldMFG_MultiGroup:
             pol_h = policies[:, h, :, :]                # (K,N,N)
 
             # tentative_edge_traffic[u,v] = sum_k current_node_mass[k,u] * pol_h[k,u,v]
-            tentative_edge_traffic = torch.einsum('ku,kuv->uv', current_node_mass, pol_h) * self._adj_bool.float()
+            tentative_edge_traffic = torch.einsum('ku,kuv->uv', current_node_mass * not_sink_mask, pol_h) * self._adj_bool.float()
 
             E_total_edges = current_edge_occ.sum(dim=(0, 3)) + tentative_edge_traffic
-            E_total_edges_final = E_total_edges * congest_mask
+            
+            W_congestion = E_total_edges / capacity.clamp(min=1e-6)   # part 1
+            W_freeflow   = edge_cost                                        # part 2
+            W_toll       = theta_leader  
 
             if cost_model == "bpr":
-                ratio = E_total_edges_final / capacity.clamp(min=1e-6)
-                travel_time = edge_cost * (1.0 + alpha * ratio.clamp(min=0.0).pow(beta))
-                W_cong_history[h] = torch.clamp(travel_time + theta_leader, min=0.0, max=float(W_max))
+                print("bpr")
             else:
+                W_parts[0, h] = W_congestion * E_total_edges
+                W_parts[1, h] = W_freeflow
+                W_parts[2, h] = W_toll
+
                 W_cong_history[h] = torch.clamp(
-                    E_total_edges_final / capacity.clamp(min=1e-6) + edge_cost + theta_leader,
-                    min=0.0, max=float(W_max)
-                )
+                    W_congestion + W_freeflow + W_toll, min=0.0, max=float(W_max)
+            )
+
 
             delay = W_cong_history[h]
             delay_floor = torch.clamp(torch.floor(delay).long(), 0, W_max)
@@ -238,4 +246,4 @@ class GraphWorldMFG_MultiGroup:
         edge_occ = torch.stack(edge_occ_list, dim=1)
         final_flows = node_mass.sum(dim=0)
 
-        return node_mass, edge_occ, final_flows, list(policies), W_cong_history
+        return node_mass, edge_occ, final_flows, list(policies), W_cong_history, W_parts

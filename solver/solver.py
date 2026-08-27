@@ -161,6 +161,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
         is_sink[k, env.groups[k]["sink"]] = 1.0
         sources[k, env.groups[k]["source"]] = env.groups[k]["mass"]
 
+    not_sink_mask = 1.0 - is_sink
     zeta_history = torch.zeros((T, K, H, N, N), device=device)
     policies = torch.stack([solver.get_policy(solver.zeta) for solver in solvers], dim=0)  # (K,H,N,N)
 
@@ -169,6 +170,8 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
         edge_occ_list = [torch.zeros((K, N, N, W_max + 1), device=device)]
 
         W_cong_history = torch.zeros((H, N, N), device=device)
+        # (3, H, N, N): [0] = congestion x_e/C_e, [1] = free-flow edge_cost, [2] = toll theta
+        W_parts = torch.zeros((3, H, N, N), device=device)
 
         for h in range(H - 1):
             current_node_mass = node_mass_list[h]      # (K,N)
@@ -177,25 +180,24 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
 
             # tentative_edge_traffic[u,v] = sum_k current_node_mass[k,u] * pol_h[k,u,v]
             # Replaces: for k: for u: for v in neighbors(u): tentative[u,v] += mass[u]*pol[k,u,v]
-            tentative_edge_traffic = torch.einsum('ku,kuv->uv', current_node_mass, pol_h) * adj_mask
+            tentative_edge_traffic = torch.einsum('ku,kuv->uv', current_node_mass * not_sink_mask, pol_h) * adj_mask
 
             E_total_edges = current_edge_occ.sum(dim=(0, 3)) + tentative_edge_traffic
 
-            E_total_edges_final = E_total_edges 
+            W_congestion = E_total_edges / capacity.clamp(min=1e-6)   # part 1
+            W_freeflow   = edge_cost                                        # part 2
+            W_toll       = theta_leader  
 
             if cost_model == "bpr":
-                # t_e(x_e) = t_e^0 * (1 + alpha * (x_e/C_e)^beta)
-                # NOTE: this REPLACES edge_cost as an additive term -- edge_cost (t_e^0)
-                # is multiplied INTO the congestion factor, not added alongside it, or
-                # the free-flow cost gets double-counted.
-                ratio = E_total_edges_final / capacity.clamp(min=1e-6)
-                travel_time = edge_cost * (1.0 + alpha * ratio.clamp(min=0.0).pow(beta))
-                W_cong_history[h] = torch.clamp(travel_time + theta_leader, min=0.0, max=float(W_max))
+                print("bpr")
             else:
+                W_parts[0, h] = W_congestion * E_total_edges
+                W_parts[1, h] = W_freeflow
+                W_parts[2, h] = W_toll
+
                 W_cong_history[h] = torch.clamp(
-                    E_total_edges_final / capacity.clamp(min=1e-6) + edge_cost + theta_leader,
-                    min=0.0, max=float(W_max)
-                )
+                    W_congestion + W_freeflow + W_toll, min=0.0, max=float(W_max)
+            )
 
             delay = W_cong_history[h]  # (N,N)
             delay_floor = torch.clamp(torch.floor(delay).long(), 0, W_max)  # (N,N)
@@ -254,7 +256,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
 
     final_flows = node_mass.sum(dim=0)  # (H, N)
 
-    return node_mass, edge_occ, final_flows, list(policies), W_cong_history, zeta_history
+    return node_mass, edge_occ, final_flows, list(policies), W_cong_history, zeta_history, W_parts
 
 
 class GraphMFG_OMD_EdgeSolver_MultiGroup:
@@ -352,7 +354,7 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
             # forced to -inf regardless of adjacency -- matching the original's
             # "if u == sink: skip the whole v-loop" behavior exactly (the original
             # never populates ANY q_actions[sink,v], even if sink has a self-loop edge).
-            q_actions_full = arrived_cost_vec.unsqueeze(1) - theta_leader + future_val  # (N,N)
+            q_actions_full = arrived_cost_vec.unsqueeze(1) + future_val  # (N,N)
             valid_mask = adj.clone()
             valid_mask[sink, :] = False
             q_actions = torch.where(valid_mask, q_actions_full, torch.full_like(q_actions_full, float('-inf')))
@@ -414,8 +416,8 @@ class GraphMFG_OMD_EdgeSolver_MultiGroup:
             fb = wf * Vb_next[v_idx, df] + wc * Vb_next[v_idx, dc]
             fp = wf * Vp_next[v_idx, df] + wc * Vp_next[v_idx, dc]
 
-            qb_full = arrived_cost_vec.unsqueeze(1) - theta_leader + fb
-            qp_full = arrived_cost_vec.unsqueeze(1) - theta_leader + fp
+            qb_full = arrived_cost_vec.unsqueeze(1)  + fb
+            qp_full = arrived_cost_vec.unsqueeze(1)  + fp
             qb = torch.where(adj, qb_full, torch.full_like(qb_full, float('-inf')))
             qp = torch.where(adj, qp_full, torch.full_like(qp_full, float('-inf')))
 

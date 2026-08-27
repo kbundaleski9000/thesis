@@ -116,77 +116,6 @@ class GraphEdgeMFG_Trainer:
         capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
 
         self.capacity = capacity
-
-        
-    def compute_social_loss(self, final_flows, W_cong_history):
-        """
-        Calculates total travel times as social loss.
-        
-        Under the indicator reward structure, the loss is the integration of all 
-        population mass that hasn't arrived at its destination sink yet.
-        """
-        H, N = final_flows.shape
-        total_social_loss = 0.0
-
-        for h in range(H):
-            for k in range(self.env.K):
-                cost = self.env.groups[k]["mass"] - final_flows[h, self.env.groups[k]["sink"]]
-                total_social_loss += cost
-
-        return total_social_loss
-    
-    def compute_congestion_penalty_loss(self, edge_occ, normalize_by_capacity=True):
-        """
-        Load-balancing / peak-congestion penalty: sum_h sum_{u,v} (x_e[h,u,v])^2,
-        or (x_e[h,u,v] / capacity[u,v])^2 if normalize_by_capacity=True.
-        Args:
-            edge_occ: (K, H, N, N, W_max+1) tensor from solve_multigroup's return.
-            normalize_by_capacity: if True, divides by self.capacity (per-edge)
-                before squaring -- requires self.capacity to be set (an (N,N)
-                tensor), the same way self.edge_cost is already set in __init__.
-                If False, computes raw flow^2 (no capacity normalization).
-    
-        Returns: scalar tensor, differentiable w.r.t. whatever edge_occ traces
-            back to (e.g. theta_leader, if this is called on a fresh, live
-            edge_occ inside compute_loss_derivative_wrt_theta_direct-style code --
-            NOT on a .detach()'d one from train_step's no_grad() forward pass).
-        """
-        edge_flows = edge_occ.sum(dim=(0, -1))  # (H, N, N)
-    
-        if normalize_by_capacity:
-            if not hasattr(self, "capacity"):
-                raise AttributeError(
-                    "compute_congestion_penalty_loss(normalize_by_capacity=True) "
-                    "requires self.capacity (an (N,N) tensor) to be set in __init__, "
-                    "the same way self.edge_cost already is."
-                )
-            # clamp(min=1e-6) avoids division by zero on non-edges / zero-capacity entries
-            ratio = edge_flows / self.capacity.clamp(min=1e-6)
-        else:
-            ratio = edge_flows
-    
-        adj_mask = self.env.A.detach()  # (N,N), 0/1
-        penalty = (ratio.abs() * adj_mask.unsqueeze(0)).sum()
-    
-        return penalty
-    
-    
-    def congestion_loss(self, edge_occ, lam=1.0, normalize_by_capacity=True):
-        """
-        total_travel_time + lam * congestion_penalty, letting you trade off
-        between minimizing total travel time (the verified-correct existing
-        objective) and discouraging any single edge from becoming severely
-        overloaded relative to its capacity.
-    
-        lam=0 recovers the existing compute_social_loss exactly. Start small
-        (e.g. 0.01-0.1) and increase only if you actually want load-balancing
-        to visibly trade off against raw travel time -- a large lam can pull
-        the solution away from the true travel-time-minimizing optimum, which
-        is the whole point of using this as a deliberate, tunable regularizer
-        rather than always defaulting to it.
-        """
-        congestion_penalty = self.compute_congestion_penalty_loss(edge_occ, normalize_by_capacity)
-        return lam * congestion_penalty
     
     def _prepare_input(self, final_flows, W_cong_history):
         """
@@ -226,38 +155,34 @@ class GraphEdgeMFG_Trainer:
     
         return features_final
 
-    def train_step_ds(self, flows_previous, W_cong_history, trainstep):
-            """
-            Executes one policy optimization step for the leader infrastructure network.
-            """
-            self.optimizer.zero_grad()
+    def compute_social_loss(self, final_flows, W_cong_history):
+        """
+        Calculates total travel times as social loss.
+        
+        Under the indicator reward structure, the loss is the integration of all 
+        population mass that hasn't arrived at its destination sink yet.
+        """
+        H, N = final_flows.shape
+        total_social_loss = 0.0
 
-            if trainstep == 1:
-            # OPTION A: If you want the network to train on iteration 1, 
-                spatial_flows = torch.zeros((self.env.K, self.env.H, self.env.N), device=self.env.device)
-                base_cong = torch.zeros((self.env.H, self.env.N, self.env.N), device=self.env.device)
-                
-                inp = self._prepare_input(spatial_flows, base_cong)
-                theta_leader = self.leader_nets(inp)
+        for h in range(H):
+            for k in range(self.env.K):
+                cost = self.env.groups[k]["mass"] - final_flows[h, self.env.groups[k]["sink"]]
+                total_social_loss += cost
 
-            else:
-                # 1. Prepare the input features for the leader network
-                spatial_flows = flows_previous.sum(dim=-1)  # Sum over waiting time dimension
-                inp = self._prepare_input(spatial_flows, W_cong_history)
-                theta_leader = self.leader_nets(inp)
+        return total_social_loss
+    
+    def congestion_loss(self, W_parts):
+        """
+        G = sum_h sum_e (x_e[h] / C_e), i.e. W_parts[0] only -- free-flow cost and
+        the toll are excluded. power=2.0 turns this into a load-balancing objective
+        that punishes single overloaded edges instead of total normalized load.
+        cap: optional clamp (e.g. W_max) so a saturated edge can't dominate the sum.
+        """
+        congestion = W_parts[0].clamp(min=0.0).unsqueeze(0).sum()
 
-            # 5. Simulate Agent Response (Inner MFG loop)
-            flows_new, final_spatial_flows, policies_new, W_cong_history_new, zeta_history_new = solve_multigroup(
-                self.env, self.solvers, T=50, W_max=100, theta_leader=theta_leader
-            )
+        return congestion
 
-            # 6. Compute Loss and Backpropagate
-            social_loss = self.compute_social_loss(flows_new, W_cong_history)
-            
-            social_loss.backward()
-            self.optimizer.step()
-
-            return social_loss, flows_new, W_cong_history_new
     
     def compute_vector_jacobian_product_zeta(self, a_t, zeta_t, k_group, theta_leader):
         """
@@ -277,7 +202,7 @@ class GraphEdgeMFG_Trainer:
                 policy_target[k] = self.solvers[k].get_policy(zeta_t[k].detach())
         
         # 3. Simulate forward passing the localized target policy and current leader rules
-        flows_sim, final_flows_sim, _, W_cong_sim = self.env.simulate_forward_with_policy(
+        flows_sim, final_flows_sim, _, W_cong_sim, W_parts = self.env.simulate_forward_with_policy(
             policy_sim=policy_target, 
             theta_leader=theta_leader
         )
@@ -304,13 +229,13 @@ class GraphEdgeMFG_Trainer:
         """
         zeta_target = final_zeta.detach().clone().requires_grad_(True)
 
-        node_mass, edge_occ, final_flows, policies, W_cong_history = self.env.simulate_forward_with_policy(
+        node_mass, edge_occ, final_flows, policies, W_cong_history, W_parts = self.env.simulate_forward_with_policy(
             zeta=zeta_target,
             theta_leader=theta_leader_val,
             W_max=100   # fix: was silently defaulting to 3
         )
 
-        loss_G = self.congestion_loss(edge_occ=edge_occ)  # use freshly computed W_cong, not stale arg
+        loss_G = self.compute_social_loss(final_flows, W_cong_history)  # use freshly computed W_cong, not stale arg
         grad_zeta = torch.autograd.grad(outputs=loss_G, inputs=zeta_target)[0]
 
         return grad_zeta.detach()   # shape (K,H,N,N)
@@ -330,14 +255,17 @@ class GraphEdgeMFG_Trainer:
         zeta_fixed = final_zeta.detach()
         theta_target = theta_leader_val.detach().clone().requires_grad_(True)
 
-        node_mass, edge_occ, final_flows, policies, W_cong_history = self.env.simulate_forward_with_policy(
+        node_mass, edge_occ, final_flows, policies, W_cong_history, W_parts = self.env.simulate_forward_with_policy(
             zeta=zeta_fixed,
             theta_leader=theta_target,
             W_max=100
         )
 
-        loss_G = self.congestion_loss(edge_occ = edge_occ)
+        loss_G = self.compute_social_loss(final_flows, W_cong_history)
         grad_theta = torch.autograd.grad(outputs=loss_G, inputs=theta_target)[0]
+
+        if grad_theta is None:                     # theta no longer touches physical dynamics
+            grad_theta = torch.zeros_like(theta_target)
 
         return grad_theta.detach()   # shape (N, N)
     
@@ -349,7 +277,7 @@ class GraphEdgeMFG_Trainer:
         zeta_target = zeta_t.detach().clone().requires_grad_(True)
         
         # 2. Map those local policies to the corresponding congestion layout
-        _, _, _, _, W_cong_sim = self.env.simulate_forward_with_policy(
+        _, _, _, _, W_cong_sim, W_parts = self.env.simulate_forward_with_policy(
             zeta=zeta_target,
             theta_leader=theta_leader_val
         )
@@ -383,7 +311,7 @@ class GraphEdgeMFG_Trainer:
         zeta_fixed = zeta_t.detach()  # stored, frozen — not differentiated
 
         # 3. Run S: policies + theta_target -> congestion, with matching W_max
-        _, _, _, _, W_cong_sim = self.env.simulate_forward_with_policy(
+        _, _, _, _, W_cong_sim, W_parts = self.env.simulate_forward_with_policy(
             zeta=zeta_fixed,
             theta_leader=theta_target,
             W_max=100   # must match the true rollout's W_max
@@ -427,7 +355,7 @@ class GraphEdgeMFG_Trainer:
         T_steps = self.OMDsteps
         
         with torch.no_grad():
-            _, edge_occ_new, final_flows_new, policies_new, W_cong_history_new, zeta_history = solve_multigroup(
+            _, edge_occ_new, final_flows_new, policies_new, W_cong_history_new, zeta_history, W_parts = solve_multigroup(
                 self.env, self.solvers, T=T_steps, W_max=100, theta_leader=theta_leader.detach().clone(),
                 edge_cost=self.edge_cost
             )
@@ -438,7 +366,7 @@ class GraphEdgeMFG_Trainer:
         print(f"Exploitability: {exploitability}")
 
         social_loss = self.compute_social_loss(final_flows_new, W_cong_history_new)
-        congestion_loss = self.congestion_loss(edge_occ=edge_occ_new)
+        congestion_loss = self.congestion_loss(W_parts=W_parts)
 
         s_adjoint = self.compute_loss_derivative_wrt_theta_direct(
             zeta_history[T_steps - 1], theta_leader

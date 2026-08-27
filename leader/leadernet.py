@@ -22,11 +22,17 @@ class GraphLeaderIncentiveNet(nn.Module):
         global_output_dim = 1 * self.N * self.N
         
         self.mlp = nn.Sequential(
-            nn.Linear(global_input_dim, 1024), nn.ReLU(),
-            nn.Linear(1024, 512),                nn.ReLU(),
-            nn.Linear(512, global_output_dim) # Outputs exactly 16 values globally
+            nn.Linear(global_input_dim, 2048), nn.ReLU(),
+            nn.Linear(2048, 1024),                nn.ReLU(),
+            nn.Linear(1024, global_output_dim) # Outputs exactly 16 values globally
         )
+
+        final = self.mlp[-1]
+        nn.init.normal_(final.weight, mean=0.0, std=1e-3)
+        nn.init.constant_(final.bias, -4.0)
         self.activation = nn.Sigmoid()
+
+       
 
     def forward(self, node_features):   
         # Expected input shape: (N, 3 * K) -> (4, 3)
@@ -85,6 +91,8 @@ class GraphLeaderIncentiveNetCNN(nn.Module):
             nn.Linear(conv_out_dim + flows_dim, 1024), nn.LayerNorm(1024), nn.ReLU(),
         )
         self.out_layer = nn.Linear(1024, self.N * self.N)
+        nn.init.normal_(self.out_layer.weight, mean=0.0, std=1e-3)
+        nn.init.constant_(self.out_layer.bias, -4.0)
         self.activation = nn.Sigmoid()
  
     def forward(self, final_flows, W_cong_history, edge_cost, adj):

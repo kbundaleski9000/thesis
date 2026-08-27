@@ -62,7 +62,7 @@ groups:
 
 
 trainer:
-  leader_lr: 0.0001
+  leader_lr: 0.005
   num_epochs: 100
   leader_loss_objective: "social_optimum"
 
