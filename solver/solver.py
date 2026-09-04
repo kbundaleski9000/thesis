@@ -136,7 +136,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
     capacity[23, 22] = 0.014083
 
     capacity.sqrt_()
-    capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
+    capacity.sqrt_()
 
     if cost_model == "bpr" and capacity is None:
         raise ValueError(
@@ -171,7 +171,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
 
         W_cong_history = torch.zeros((H, N, N), device=device)
         # (3, H, N, N): [0] = congestion x_e/C_e, [1] = free-flow edge_cost, [2] = toll theta
-        W_parts = torch.zeros((3, H, N, N), device=device)
+        W_parts = torch.zeros((4, H, N, N), device=device)
 
         for h in range(H - 1):
             current_node_mass = node_mass_list[h]      # (K,N)
@@ -183,7 +183,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
             tentative_edge_traffic = torch.einsum('ku,kuv->uv', current_node_mass * not_sink_mask, pol_h) * adj_mask
 
             E_total_edges = current_edge_occ.sum(dim=(0, 3)) + tentative_edge_traffic
-
+            
             W_congestion = E_total_edges / capacity.clamp(min=1e-6)   # part 1
             W_freeflow   = edge_cost                                        # part 2
             W_toll       = theta_leader  
@@ -191,9 +191,10 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
             if cost_model == "bpr":
                 print("bpr")
             else:
-                W_parts[0, h] = W_congestion * E_total_edges
+                W_parts[0, h] = W_congestion
                 W_parts[1, h] = W_freeflow
                 W_parts[2, h] = W_toll
+                W_parts[3, h] = E_total_edges
 
                 W_cong_history[h] = torch.clamp(
                     W_congestion + W_freeflow + W_toll, min=0.0, max=float(W_max)

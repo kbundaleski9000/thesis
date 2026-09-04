@@ -113,7 +113,7 @@ class GraphEdgeMFG_Trainer:
         capacity[23, 22] = 0.014083
 
         capacity.sqrt_()
-        capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
+        capacity.sqrt_()
 
         self.capacity = capacity
     
@@ -172,17 +172,13 @@ class GraphEdgeMFG_Trainer:
 
         return total_social_loss
     
-    def congestion_loss(self, W_parts):
-        """
-        G = sum_h sum_e (x_e[h] / C_e), i.e. W_parts[0] only -- free-flow cost and
-        the toll are excluded. power=2.0 turns this into a load-balancing objective
-        that punishes single overloaded edges instead of total normalized load.
-        cap: optional clamp (e.g. W_max) so a saturated edge can't dominate the sum.
-        """
-        congestion = W_parts[0].clamp(min=0.0).unsqueeze(0).sum()
-
-        return congestion
-
+    def congestion_loss(self, W_parts, edge_occ):
+        cong, free, toll = W_parts[0], W_parts[1], W_parts[2]
+        occ = edge_occ.sum(dim=(0, -1))                  # (H,N,N) true occupancy
+        total = (cong + free + toll).clamp(min=1e-6)
+        share = cong.clamp(min=0.0) / total
+        adj = self.env.A.detach().unsqueeze(0)
+        return (share * occ * adj).sum()
     
     def compute_vector_jacobian_product_zeta(self, a_t, zeta_t, k_group, theta_leader):
         """
@@ -235,7 +231,7 @@ class GraphEdgeMFG_Trainer:
             W_max=100   # fix: was silently defaulting to 3
         )
 
-        loss_G = self.compute_social_loss(final_flows, W_cong_history)  # use freshly computed W_cong, not stale arg
+        loss_G = self.congestion_loss(W_parts, edge_occ)  # use freshly computed W_cong, not stale arg
         grad_zeta = torch.autograd.grad(outputs=loss_G, inputs=zeta_target)[0]
 
         return grad_zeta.detach()   # shape (K,H,N,N)
@@ -261,7 +257,7 @@ class GraphEdgeMFG_Trainer:
             W_max=100
         )
 
-        loss_G = self.compute_social_loss(final_flows, W_cong_history)
+        loss_G = self.congestion_loss(W_parts, edge_occ) 
         grad_theta = torch.autograd.grad(outputs=loss_G, inputs=theta_target)[0]
 
         if grad_theta is None:                     # theta no longer touches physical dynamics
@@ -366,7 +362,13 @@ class GraphEdgeMFG_Trainer:
         print(f"Exploitability: {exploitability}")
 
         social_loss = self.compute_social_loss(final_flows_new, W_cong_history_new)
-        congestion_loss = self.congestion_loss(W_parts=W_parts)
+        congestion_loss = self.congestion_loss(W_parts=W_parts, edge_occ=edge_occ_new)
+
+        adj = self.env.A.detach().unsqueeze(0)
+        occ = edge_occ_new.sum(dim=(0, -1))
+        tot = W_cong_history_new.clamp(min=1e-6)
+        parts = [( (W_parts[i]/tot) * occ * adj).sum() for i in range(3)]
+        print(parts, sum(parts), occ.sum(), social_loss)
 
         s_adjoint = self.compute_loss_derivative_wrt_theta_direct(
             zeta_history[T_steps - 1], theta_leader

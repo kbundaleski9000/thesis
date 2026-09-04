@@ -146,7 +146,7 @@ class GraphWorldMFG_MultiGroup:
         capacity[23, 22] = 0.014083
 
         capacity.sqrt_()
-        capacity.sqrt_()  # Apply sqrt twice to match the original code's behavior
+        capacity.sqrt_()
 
         if edge_cost is None:
             edge_cost = torch.zeros((N, N), device=device) + 2.0
@@ -179,7 +179,7 @@ class GraphWorldMFG_MultiGroup:
         edge_occ_list = [torch.zeros((K, N, N, W_max + 1), device=device)]
 
         W_cong_history = torch.zeros((H, N, N), device=device)
-        W_parts = torch.zeros((3, H, N, N), device=device)
+        W_parts = torch.zeros((4, H, N, N), device=device)
 
         for h in range(H - 1):
             current_node_mass = node_mass_list[h]      # (K,N)
@@ -198,9 +198,10 @@ class GraphWorldMFG_MultiGroup:
             if cost_model == "bpr":
                 print("bpr")
             else:
-                W_parts[0, h] = W_congestion * E_total_edges
+                W_parts[0, h] = W_congestion
                 W_parts[1, h] = W_freeflow
                 W_parts[2, h] = W_toll
+                W_parts[3, h] = E_total_edges
 
                 W_cong_history[h] = torch.clamp(
                     W_congestion + W_freeflow + W_toll, min=0.0, max=float(W_max)
