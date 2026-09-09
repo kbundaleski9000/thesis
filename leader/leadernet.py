@@ -92,7 +92,7 @@ class GraphLeaderIncentiveNetCNN(nn.Module):
         )
         self.out_layer = nn.Linear(1024, self.N * self.N)
         nn.init.normal_(self.out_layer.weight, mean=0.0, std=1e-3)
-        nn.init.constant_(self.out_layer.bias, -1.0)
+        nn.init.constant_(self.out_layer.bias, -4.0)
         self.activation = nn.Sigmoid()
  
     def forward(self, final_flows, W_cong_history, edge_cost, adj):
