@@ -28,7 +28,7 @@ class GraphLeaderIncentiveNet(nn.Module):
         )
 
         final = self.mlp[-1]
-        nn.init.normal_(final.weight, mean=0.0, std=1e-3)
+        nn.init.normal_(final.weight, mean=0.0, std=1e-2)
         nn.init.constant_(final.bias, -4.0)
         self.activation = nn.Sigmoid()
 
@@ -91,6 +91,8 @@ class GraphLeaderIncentiveNetCNN(nn.Module):
             nn.Linear(conv_out_dim + flows_dim, 1024), nn.LayerNorm(1024), nn.ReLU(),
         )
         self.out_layer = nn.Linear(1024, self.N * self.N)
+        nn.init.normal_(self.out_layer.weight, mean=0.0, std=1e-3)
+        nn.init.constant_(self.out_layer.bias, -1.0)
         self.activation = nn.Sigmoid()
  
     def forward(self, final_flows, W_cong_history, edge_cost, adj):
@@ -113,3 +115,75 @@ class GraphLeaderIncentiveNetCNN(nn.Module):
         features = self.head(combined)
         out = self.out_layer(features).view(self.N, self.N)
         return self.activation(out) * 5.0
+
+
+class GraphLeaderIncentiveNetCNNGNN(nn.Module):
+    """
+    CNN trunk with adjacency mixing interleaved between conv blocks.
+
+    The 3x3 convs still pool over index-adjacent cells (fictitious locality),
+    but between blocks the features are also propagated along the REAL graph:
+    each edge (u,v) gathers from edges sharing its tail u and from edges
+    sharing its head v. The mix is residual, so the conv path is preserved
+    and the graph path is added rather than replacing it.
+    """
+    def __init__(self, num_nodes, K, H):
+        super().__init__()
+        self.N = num_nodes
+        self.K = K
+        self.H = H
+
+        in_channels = H + 2
+
+        # split into blocks so mixing can happen between them
+        self.block1 = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1), nn.ReLU(),
+        )
+        self.block2 = nn.Sequential(
+            nn.Conv2d(64, 64, kernel_size=3, padding=1), nn.GroupNorm(8, 64), nn.ReLU(),
+        )
+        self.block3 = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.ReLU(),
+        )
+
+        # 1x1 convs that fold the two graph aggregations back to the block width
+        self.mix1 = nn.Conv2d(2 * 64, 64, kernel_size=1)
+        self.mix2 = nn.Conv2d(2 * 64, 64, kernel_size=1)
+
+        conv_out_dim = 32 * self.N * self.N
+        flows_dim = self.H * self.N
+
+        self.head = nn.Sequential(
+            nn.Linear(conv_out_dim + flows_dim, 1024), nn.LayerNorm(1024), nn.ReLU(),
+        )
+        self.out_layer = nn.Linear(1024, self.N * self.N)
+        nn.init.normal_(self.out_layer.weight, mean=0.0, std=1e-3)
+        nn.init.constant_(self.out_layer.bias, -4.0)
+        self.activation = nn.Sigmoid()
+
+    def _graph_mix(self, x, A, mix):
+        """x: (1,C,N,N) -> residual update using real adjacency."""
+        deg = A.sum(dim=1, keepdim=True).clamp(min=1.0)      # (N,1) degree
+        An = A / deg                                          # row-normalized
+        head = torch.einsum('un,bcnv->bcuv', An, x)           # neighbours of tail u
+        tail = torch.einsum('vn,bcun->bcuv', An, x)           # neighbours of head v
+        return x + mix(torch.cat([head, tail], dim=1))
+
+    def forward(self, final_flows, W_cong_history, edge_cost, adj):
+        A = adj.detach()
+
+        img = torch.cat([
+            W_cong_history,               # (H, N, N)
+            edge_cost.unsqueeze(0),       # (1, N, N)
+            adj.unsqueeze(0),             # (1, N, N)
+        ], dim=0).unsqueeze(0)            # (1, H+2, N, N)
+
+        x = self.block1(img)
+        x = self._graph_mix(x, A, self.mix1)
+        x = self.block2(x)
+        x = self._graph_mix(x, A, self.mix2)
+        x = self.block3(x)
+
+        combined = torch.cat([x.flatten(), final_flows.flatten()], dim=0)
+        out = self.out_layer(self.head(combined)).view(self.N, self.N)
+        return self.activation(out) * 5.0 * adj

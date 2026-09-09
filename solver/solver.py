@@ -41,102 +41,200 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
     if edge_cost is None:
         edge_cost = torch.zeros((N, N), device=device) + 2.0
 
-    capacity = torch.zeros((N, N), device=device)
-    capacity[0, 1] = 0.071825
-    capacity[0, 2] = 0.064901
-    capacity[1, 0] = 0.071825
-    capacity[1, 5] = 0.013750
-    capacity[2, 0] = 0.064901
+    a = 0.15
 
-    capacity[2, 3] = 0.047450
-    capacity[2, 11] = 0.064901
-    capacity[3, 2] = 0.047450
-    capacity[3, 4] = 0.049314
-    capacity[3, 10] = 0.013613
+    if a > 0.0:
+        edge_cost = torch.zeros((N, N), device=device)
+        edge_cost[0, 1] = 6
+        edge_cost[0, 2] = 4
+        edge_cost[1, 0] = 6
+        edge_cost[1, 5] = 5
+        edge_cost[2, 0] = 4
 
-    capacity[4, 3] = 0.049314
-    capacity[4, 5] = 0.013722
-    capacity[4, 8] = 0.027732
-    capacity[5, 1] = 0.013750
-    capacity[5, 4] = 0.013722
+        edge_cost[2, 3] = 4
+        edge_cost[2, 11] = 4
+        edge_cost[3, 2] = 4
+        edge_cost[3, 4] = 2
+        edge_cost[3, 10] = 6
 
-    capacity[5, 7] = 0.013585
-    capacity[6, 7] = 0.021747
-    capacity[6, 17] = 0.064901
-    capacity[7, 5] = 0.013585
-    capacity[7, 6] = 0.021747
+        edge_cost[4, 3] = 2
+        edge_cost[4, 5] = 4
+        edge_cost[4, 8] = 5
+        edge_cost[5, 1] = 5
+        edge_cost[5, 4] = 4
 
-    capacity[7, 8] = 0.014005
-    capacity[7, 15] = 0.013993
-    capacity[8, 4] = 0.027732
-    capacity[8, 7] = 0.014005
-    capacity[8, 9] = 0.038591
+        edge_cost[5, 7] = 2
+        edge_cost[6, 7] = 3
+        edge_cost[6, 17] = 2
+        edge_cost[7, 5] = 2
+        edge_cost[7, 6] = 3
 
-    capacity[9, 8] = 0.038591
-    capacity[9, 10] = 0.027732
-    capacity[9, 14] = 0.037471
-    capacity[9, 15] = 0.013463
-    capacity[9, 16] = 0.013848
+        edge_cost[7, 8] = 10
+        edge_cost[7, 15] = 5
+        edge_cost[8, 4] = 5
+        edge_cost[8, 7] = 10
+        edge_cost[8, 9] = 3
 
-    capacity[10, 3] = 0.013613
-    capacity[10, 9] = 0.027732
-    capacity[10, 11] = 0.013613
-    capacity[10, 13] = 0.013523
-    capacity[11, 2] = 0.064901
+        edge_cost[9, 8] = 3
+        edge_cost[9, 10] = 5
+        edge_cost[9, 14] = 6
+        edge_cost[9, 15] = 4
+        edge_cost[9, 16] = 8
 
-    capacity[11, 10] = 0.013613
-    capacity[11, 12] = 0.071825
-    capacity[12, 11] = 0.071825
-    capacity[12, 23] = 0.014119
-    capacity[13, 10] = 0.013523
+        edge_cost[10, 3] = 6
+        edge_cost[10, 9] = 5
+        edge_cost[10, 11] = 6
+        edge_cost[10, 13] = 4
+        edge_cost[11, 2] = 4
 
-    capacity[13, 14] = 0.014219
-    capacity[13, 22] = 0.013657
-    capacity[14, 9] = 0.037471
-    capacity[14, 13] = 0.014219
-    capacity[14, 18] = 0.040390
+        edge_cost[11, 10] = 6
+        edge_cost[11, 12] = 3
+        edge_cost[12, 11] = 3
+        edge_cost[12, 23] = 4
+        edge_cost[13, 10] = 4
 
-    capacity[14, 21] = 0.026620
-    capacity[15, 7] = 0.013993
-    capacity[15, 9] = 0.013463
-    capacity[15, 16] = 0.014503
-    capacity[15, 17] = 0.054575
+        edge_cost[13, 14] = 5
+        edge_cost[13, 22] = 4
+        edge_cost[14, 9] = 6
+        edge_cost[14, 13] = 5
+        edge_cost[14, 18] = 3
 
-    capacity[16, 9] = 0.013848
-    capacity[16, 15] = 0.014503
-    capacity[16, 18] = 0.013378
-    capacity[17, 6] = 0.064901
-    capacity[17, 15] = 0.054575
+        edge_cost[14, 21] = 3
+        edge_cost[15, 7] = 5
+        edge_cost[15, 9] = 4
+        edge_cost[15, 16] = 2
+        edge_cost[15, 17] = 3
 
-    capacity[17, 19] = 0.064901
-    capacity[18, 14] = 0.040390
-    capacity[18, 16] = 0.013378
-    capacity[18, 19] = 0.013873
-    capacity[19, 17] = 0.064901
+        edge_cost[16, 9] = 8
+        edge_cost[16, 15] = 2
+        edge_cost[16, 18] = 2
+        edge_cost[17, 6] = 2
+        edge_cost[17, 15] = 3
 
-    capacity[19, 18] = 0.013873
-    capacity[19, 20] = 0.014032
-    capacity[19, 21] = 0.014076
-    capacity[20, 19] = 0.014032
-    capacity[20, 21] = 0.014503
+        edge_cost[17, 19] = 4
+        edge_cost[18, 14] = 3
+        edge_cost[18, 16] = 2
+        edge_cost[18, 19] = 4
+        edge_cost[19, 17] = 4
 
-    capacity[20, 23] = 0.013548
-    capacity[21, 14] = 0.026620
-    capacity[21, 19] = 0.014076
-    capacity[21, 20] = 0.014503
-    capacity[21, 22] = 0.013866
+        edge_cost[19, 18] = 4
+        edge_cost[19, 20] = 6
+        edge_cost[19, 21] = 5
+        edge_cost[20, 19] = 6
+        edge_cost[20, 21] = 2
+
+        edge_cost[20, 23] = 3
+        edge_cost[21, 14] = 3
+        edge_cost[21, 19] = 5
+        edge_cost[21, 20] = 2
+        edge_cost[21, 22] = 4
+
+        edge_cost[22, 13] = 4
+        edge_cost[22, 21] = 4
+        edge_cost[22, 23] = 2
+        edge_cost[23, 12] = 4
+        edge_cost[23, 20] = 3
+
+        edge_cost[23, 22] = 2
+        edge_cost -= 2
+
+        capacity = torch.zeros((N, N), device=device)
+        capacity[0, 1] = 0.071825
+        capacity[0, 2] = 0.064901
+        capacity[1, 0] = 0.071825
+        capacity[1, 5] = 0.013750
+        capacity[2, 0] = 0.064901
+
+        capacity[2, 3] = 0.047450
+        capacity[2, 11] = 0.064901
+        capacity[3, 2] = 0.047450
+        capacity[3, 4] = 0.049314
+        capacity[3, 10] = 0.013613
+
+        capacity[4, 3] = 0.049314
+        capacity[4, 5] = 0.013722
+        capacity[4, 8] = 0.027732
+        capacity[5, 1] = 0.013750
+        capacity[5, 4] = 0.013722
+
+        capacity[5, 7] = 0.013585
+        capacity[6, 7] = 0.021747
+        capacity[6, 17] = 0.064901
+        capacity[7, 5] = 0.013585
+        capacity[7, 6] = 0.021747
+
+        capacity[7, 8] = 0.014005
+        capacity[7, 15] = 0.013993
+        capacity[8, 4] = 0.027732
+        capacity[8, 7] = 0.014005
+        capacity[8, 9] = 0.038591
+
+        capacity[9, 8] = 0.038591
+        capacity[9, 10] = 0.027732
+        capacity[9, 14] = 0.037471
+        capacity[9, 15] = 0.013463
+        capacity[9, 16] = 0.013848
+
+        capacity[10, 3] = 0.013613
+        capacity[10, 9] = 0.027732
+        capacity[10, 11] = 0.013613
+        capacity[10, 13] = 0.013523
+        capacity[11, 2] = 0.064901
+
+        capacity[11, 10] = 0.013613
+        capacity[11, 12] = 0.071825
+        capacity[12, 11] = 0.071825
+        capacity[12, 23] = 0.014119
+        capacity[13, 10] = 0.013523
+
+        capacity[13, 14] = 0.014219
+        capacity[13, 22] = 0.013657
+        capacity[14, 9] = 0.037471
+        capacity[14, 13] = 0.014219
+        capacity[14, 18] = 0.040390
+
+        capacity[14, 21] = 0.026620
+        capacity[15, 7] = 0.013993
+        capacity[15, 9] = 0.013463
+        capacity[15, 16] = 0.014503
+        capacity[15, 17] = 0.054575
+
+        capacity[16, 9] = 0.013848
+        capacity[16, 15] = 0.014503
+        capacity[16, 18] = 0.013378
+        capacity[17, 6] = 0.064901
+        capacity[17, 15] = 0.054575
+
+        capacity[17, 19] = 0.064901
+        capacity[18, 14] = 0.040390
+        capacity[18, 16] = 0.013378
+        capacity[18, 19] = 0.013873
+        capacity[19, 17] = 0.064901
+
+        capacity[19, 18] = 0.013873
+        capacity[19, 20] = 0.014032
+        capacity[19, 21] = 0.014076
+        capacity[20, 19] = 0.014032
+        capacity[20, 21] = 0.014503
+
+        capacity[20, 23] = 0.013548
+        capacity[21, 14] = 0.026620
+        capacity[21, 19] = 0.014076
+        capacity[21, 20] = 0.014503
+        capacity[21, 22] = 0.013866
 
 
-    capacity[22, 13] = 0.013657
-    capacity[22, 21] = 0.013866
-    capacity[22, 23] = 0.014083
-    capacity[23, 12] = 0.014119
-    capacity[23, 20] = 0.013548
+        capacity[22, 13] = 0.013657
+        capacity[22, 21] = 0.013866
+        capacity[22, 23] = 0.014083
+        capacity[23, 12] = 0.014119
+        capacity[23, 20] = 0.013548
 
-    capacity[23, 22] = 0.014083
+        capacity[23, 22] = 0.014083
 
-    capacity.sqrt_()
-    capacity.sqrt_()
+        
+        capacity.sqrt_()
+        
 
     if cost_model == "bpr" and capacity is None:
         raise ValueError(
@@ -186,7 +284,7 @@ def solve_multigroup(env, solvers, T=200, W_max=100, theta_leader=None, edge_cos
             
             W_congestion = E_total_edges / capacity.clamp(min=1e-6)   # part 1
             W_freeflow   = edge_cost                                        # part 2
-            W_toll       = theta_leader  
+            W_toll       = theta_leader
 
             if cost_model == "bpr":
                 print("bpr")

@@ -15,10 +15,102 @@ class GraphEdgeMFG_Trainer:
         self.leader_nets = GraphLeaderIncentiveNetCNN(env.N, env.K, solvers[0].H).to(env.device)
         self.optimizer = optim.Adam(self.leader_nets.parameters(), lr=leader_lr)
         self.OMDsteps = 50
-
-        self.edge_cost = torch.zeros((self.env.N, self.env.N), device=self.env.device) + 2.0
         # adj is already {0, 1} -- no normalization needed.
         capacity = torch.zeros((self.env.N, self.env.N))
+        edge_cost = torch.zeros((self.env.N, self.env.N))
+        edge_cost[0, 1] = 6
+        edge_cost[0, 2] = 4
+        edge_cost[1, 0] = 6
+        edge_cost[1, 5] = 5
+        edge_cost[2, 0] = 4
+
+        edge_cost[2, 3] = 4
+        edge_cost[2, 11] = 4
+        edge_cost[3, 2] = 4
+        edge_cost[3, 4] = 2
+        edge_cost[3, 10] = 6
+
+        edge_cost[4, 3] = 2
+        edge_cost[4, 5] = 4
+        edge_cost[4, 8] = 5
+        edge_cost[5, 1] = 5
+        edge_cost[5, 4] = 4
+
+        edge_cost[5, 7] = 2
+        edge_cost[6, 7] = 3
+        edge_cost[6, 17] = 2
+        edge_cost[7, 5] = 2
+        edge_cost[7, 6] = 3
+
+        edge_cost[7, 8] = 10
+        edge_cost[7, 15] = 5
+        edge_cost[8, 4] = 5
+        edge_cost[8, 7] = 10
+        edge_cost[8, 9] = 3
+
+        edge_cost[9, 8] = 3
+        edge_cost[9, 10] = 5
+        edge_cost[9, 14] = 6
+        edge_cost[9, 15] = 4
+        edge_cost[9, 16] = 8
+
+        edge_cost[10, 3] = 6
+        edge_cost[10, 9] = 5
+        edge_cost[10, 11] = 6
+        edge_cost[10, 13] = 4
+        edge_cost[11, 2] = 4
+
+        edge_cost[11, 10] = 6
+        edge_cost[11, 12] = 3
+        edge_cost[12, 11] = 3
+        edge_cost[12, 23] = 4
+        edge_cost[13, 10] = 4
+
+        edge_cost[13, 14] = 5
+        edge_cost[13, 22] = 4
+        edge_cost[14, 9] = 6
+        edge_cost[14, 13] = 5
+        edge_cost[14, 18] = 3
+
+        edge_cost[14, 21] = 3
+        edge_cost[15, 7] = 5
+        edge_cost[15, 9] = 4
+        edge_cost[15, 16] = 2
+        edge_cost[15, 17] = 3
+
+        edge_cost[16, 9] = 8
+        edge_cost[16, 15] = 2
+        edge_cost[16, 18] = 2
+        edge_cost[17, 6] = 2
+        edge_cost[17, 15] = 3
+
+        edge_cost[17, 19] = 4
+        edge_cost[18, 14] = 3
+        edge_cost[18, 16] = 2
+        edge_cost[18, 19] = 4
+        edge_cost[19, 17] = 4
+
+        edge_cost[19, 18] = 4
+        edge_cost[19, 20] = 6
+        edge_cost[19, 21] = 5
+        edge_cost[20, 19] = 6
+        edge_cost[20, 21] = 2
+
+        edge_cost[20, 23] = 3
+        edge_cost[21, 14] = 3
+        edge_cost[21, 19] = 5
+        edge_cost[21, 20] = 2
+        edge_cost[21, 22] = 4
+
+        edge_cost[22, 13] = 4
+        edge_cost[22, 21] = 4
+        edge_cost[22, 23] = 2
+        edge_cost[23, 12] = 4
+        edge_cost[23, 20] = 3
+
+        edge_cost[23, 22] = 2
+        edge_cost -= 2
+
         capacity[0, 1] = 0.071825
         capacity[0, 2] = 0.064901
         capacity[1, 0] = 0.071825
@@ -112,10 +204,12 @@ class GraphEdgeMFG_Trainer:
 
         capacity[23, 22] = 0.014083
 
+        
         capacity.sqrt_()
-        capacity.sqrt_()
+        
 
         self.capacity = capacity
+        self.edge_cost = edge_cost
     
     def _prepare_input(self, final_flows, W_cong_history):
         """
@@ -231,7 +325,7 @@ class GraphEdgeMFG_Trainer:
             W_max=100   # fix: was silently defaulting to 3
         )
 
-        loss_G = self.congestion_loss(W_parts, edge_occ)  # use freshly computed W_cong, not stale arg
+        loss_G = self.compute_social_loss(final_flows, W_cong_history)  # use freshly computed W_cong, not stale arg
         grad_zeta = torch.autograd.grad(outputs=loss_G, inputs=zeta_target)[0]
 
         return grad_zeta.detach()   # shape (K,H,N,N)
@@ -257,7 +351,7 @@ class GraphEdgeMFG_Trainer:
             W_max=100
         )
 
-        loss_G = self.congestion_loss(W_parts, edge_occ) 
+        loss_G = self.compute_social_loss(final_flows, W_cong_history)
         grad_theta = torch.autograd.grad(outputs=loss_G, inputs=theta_target)[0]
 
         if grad_theta is None:                     # theta no longer touches physical dynamics
@@ -358,8 +452,10 @@ class GraphEdgeMFG_Trainer:
 
         print(zeta_history.shape)
 
-        exploitability, V_best, V_pi = self.solvers[0].compute_exploitability(W_cong_history_new, W_max=100, theta_leader=theta_leader.detach().clone())
-        print(f"Exploitability: {exploitability}")
+        
+        for i in range(len(self.solvers)):
+            exploitability, V_best, V_pi = self.solvers[i].compute_exploitability(W_cong_history_new, W_max=100, theta_leader=theta_leader.detach().clone())
+            print(f"Exploitability: {exploitability}")
 
         social_loss = self.compute_social_loss(final_flows_new, W_cong_history_new)
         congestion_loss = self.congestion_loss(W_parts=W_parts, edge_occ=edge_occ_new)

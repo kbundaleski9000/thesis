@@ -56,19 +56,20 @@ graph:
 groups:
   # O-D Pair 1: Original Node 1 -> Node 20
   - source: 0
-    sink: 18
+    sink: 19
     mass: 1.0
     label: "Group 1 (Node 1 -> 20)"
+  
 
 
 trainer:
-  leader_lr: 0.0001
+  leader_lr: 0.002
   num_epochs: 100
   leader_loss_objective: "social_optimum"
 
 solver:
-  eta: 0.10
-  tau: 0.05
+  eta: 0.05
+  tau: 0.02
   T: 25
   alpha: 1.0
   H: 50

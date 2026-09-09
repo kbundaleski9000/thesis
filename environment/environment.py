@@ -51,6 +51,100 @@ class GraphWorldMFG_MultiGroup:
         K, H, N = self.K, self.H, self.N
         device = self.device    
 
+        edge_cost = torch.zeros((N, N), device=device)
+        edge_cost[0, 1] = 6
+        edge_cost[0, 2] = 4
+        edge_cost[1, 0] = 6
+        edge_cost[1, 5] = 5
+        edge_cost[2, 0] = 4
+
+        edge_cost[2, 3] = 4
+        edge_cost[2, 11] = 4
+        edge_cost[3, 2] = 4
+        edge_cost[3, 4] = 2
+        edge_cost[3, 10] = 6
+
+        edge_cost[4, 3] = 2
+        edge_cost[4, 5] = 4
+        edge_cost[4, 8] = 5
+        edge_cost[5, 1] = 5
+        edge_cost[5, 4] = 4
+
+        edge_cost[5, 7] = 2
+        edge_cost[6, 7] = 3
+        edge_cost[6, 17] = 2
+        edge_cost[7, 5] = 2
+        edge_cost[7, 6] = 3
+
+        edge_cost[7, 8] = 10
+        edge_cost[7, 15] = 5
+        edge_cost[8, 4] = 5
+        edge_cost[8, 7] = 10
+        edge_cost[8, 9] = 3
+
+        edge_cost[9, 8] = 3
+        edge_cost[9, 10] = 5
+        edge_cost[9, 14] = 6
+        edge_cost[9, 15] = 4
+        edge_cost[9, 16] = 8
+
+        edge_cost[10, 3] = 6
+        edge_cost[10, 9] = 5
+        edge_cost[10, 11] = 6
+        edge_cost[10, 13] = 4
+        edge_cost[11, 2] = 4
+
+        edge_cost[11, 10] = 6
+        edge_cost[11, 12] = 3
+        edge_cost[12, 11] = 3
+        edge_cost[12, 23] = 4
+        edge_cost[13, 10] = 4
+
+        edge_cost[13, 14] = 5
+        edge_cost[13, 22] = 4
+        edge_cost[14, 9] = 6
+        edge_cost[14, 13] = 5
+        edge_cost[14, 18] = 3
+
+        edge_cost[14, 21] = 3
+        edge_cost[15, 7] = 5
+        edge_cost[15, 9] = 4
+        edge_cost[15, 16] = 2
+        edge_cost[15, 17] = 3
+
+        edge_cost[16, 9] = 8
+        edge_cost[16, 15] = 2
+        edge_cost[16, 18] = 2
+        edge_cost[17, 6] = 2
+        edge_cost[17, 15] = 3
+
+        edge_cost[17, 19] = 4
+        edge_cost[18, 14] = 3
+        edge_cost[18, 16] = 2
+        edge_cost[18, 19] = 4
+        edge_cost[19, 17] = 4
+
+        edge_cost[19, 18] = 4
+        edge_cost[19, 20] = 6
+        edge_cost[19, 21] = 5
+        edge_cost[20, 19] = 6
+        edge_cost[20, 21] = 2
+
+        edge_cost[20, 23] = 3
+        edge_cost[21, 14] = 3
+        edge_cost[21, 19] = 5
+        edge_cost[21, 20] = 2
+        edge_cost[21, 22] = 4
+
+        edge_cost[22, 13] = 4
+        edge_cost[22, 21] = 4
+        edge_cost[22, 23] = 2
+        edge_cost[23, 12] = 4
+        edge_cost[23, 20] = 3
+
+        edge_cost[23, 22] = 2
+        edge_cost -= 2
+
         capacity = torch.zeros((N, N), device=device)
         capacity[0, 1] = 0.071825
         capacity[0, 2] = 0.064901
@@ -144,12 +238,9 @@ class GraphWorldMFG_MultiGroup:
         capacity[23, 20] = 0.013548
 
         capacity[23, 22] = 0.014083
-
+        
         capacity.sqrt_()
-        capacity.sqrt_()
-
-        if edge_cost is None:
-            edge_cost = torch.zeros((N, N), device=device) + 2.0
+        
 
         if cost_model == "bpr" and capacity is None:
             raise ValueError(
@@ -193,7 +284,7 @@ class GraphWorldMFG_MultiGroup:
             
             W_congestion = E_total_edges / capacity.clamp(min=1e-6)   # part 1
             W_freeflow   = edge_cost                                        # part 2
-            W_toll       = theta_leader  
+            W_toll       = theta_leader
 
             if cost_model == "bpr":
                 print("bpr")
